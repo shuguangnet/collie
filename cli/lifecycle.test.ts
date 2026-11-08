@@ -27,6 +27,7 @@ import { SETUP_CLOSING } from "./setup-findings.ts";
 import { TAILSCALE_PROBE_MS } from "./tailnet.ts";
 import { POWERSHELL_UTF8, PROCESS_QUERY_SLOW_START_MS } from "./sys.ts";
 import { collieBinary, taskFilePath } from "./unit.ts";
+import { asJsonObject } from "../web/src/lib/json.ts";
 
 // The binary, spelled the way the code under test spells it. `collieBinary` joins with the host
 // separator, so a POSIX literal like `/opt/collie/bin/collie` never matches on a Windows host, and it
@@ -2237,6 +2238,7 @@ describe("status --json", () => {
       "mux",
       "muxPickedBecause",
       "pairedDevices",
+      "persistence",
       "phoneUrl",
       "port",
       "running",
@@ -2246,6 +2248,78 @@ describe("status --json", () => {
     expect(body.census).toEqual(FAKE_CENSUS);
     expect(Object.keys(body.census)).toEqual(["members", "devices", "sessions"]);
     expect(h.exec.calls).not.toContain("tailscale serve status");
+  });
+
+  test("the persistence verdict is the same judgement, and is ready only when service, linger and mux are", async () => {
+    const h = harness({
+      ready: true,
+      env: { COLLIE_MUX: "herdr", USER: "pat" },
+      files: { [`${HOME}/.config/systemd/user/collie.service`]: "[Unit]\n" },
+      answers: [
+        ...NAMED,
+        ["systemctl --user is-enabled", { stdout: "enabled\n" }],
+        ["systemctl --user is-active", { stdout: "active\n" }],
+        [
+          "systemctl --user show",
+          {
+            stdout: [
+              "LoadState=loaded",
+              `FragmentPath=${HOME}/.config/systemd/user/collie.service`,
+              "UnitFileState=enabled",
+              "ExecStart={ path=/opt/collie/bin/collie ; argv[]=/opt/collie/bin/collie _exec-bridge ; ignore_errors=no ; pid=0 ; status=0/0 }",
+            ].join("\n"),
+          },
+        ],
+        ["loginctl show-user pat", { stdout: "Linger=yes\n" }],
+      ],
+    });
+    // The harness's uid is 501; the fake filesystem's owner is 1000. Align them for the owned unit.
+    h.deps.uid = () => 1000;
+    h.deps.snapshot = async () => ({ kind: "body", text: JSON.stringify({ bridge: "connected" }) });
+    const out = await json(h);
+    expect(out.persistence).toMatchObject({
+      ready: true,
+      guarantee: "unattended",
+      loginRequirement: "none",
+      identity: "current",
+      durability: "persistent",
+      serviceEnabled: true,
+      serviceActive: true,
+      linger: true,
+      muxReachable: true,
+      reasons: ["ready"],
+    });
+  });
+
+  test("without a snapshot the mux half is unknown, never a guessed ready", async () => {
+    const h = harness({
+      ready: true,
+      env: { COLLIE_MUX: "herdr", USER: "pat" },
+      files: { [`${HOME}/.config/systemd/user/collie.service`]: "[Unit]\n" },
+      answers: [
+        ...NAMED,
+        ["systemctl --user is-enabled", { stdout: "enabled\n" }],
+        ["systemctl --user is-active", { stdout: "active\n" }],
+        [
+          "systemctl --user show",
+          {
+            stdout: [
+              "LoadState=loaded",
+              `FragmentPath=${HOME}/.config/systemd/user/collie.service`,
+              "UnitFileState=enabled",
+              "ExecStart={ path=/opt/collie/bin/collie ; argv[]=/opt/collie/bin/collie _exec-bridge ; ignore_errors=no ; pid=0 ; status=0/0 }",
+            ].join("\n"),
+          },
+        ],
+        ["loginctl show-user pat", { stdout: "Linger=yes\n" }],
+      ],
+    });
+    h.deps.uid = () => 1000;
+    const out = await json(h);
+    const persistence = asJsonObject(out.persistence) ?? {};
+    expect(persistence.ready).toBe(false);
+    expect(persistence.muxReachable).toBeNull();
+    expect(Array.isArray(persistence.reasons) && persistence.reasons.includes("mux-unknown")).toBe(true);
   });
 
   test("the multiplexer: named, or picked with the reason, in the JSON and the banner", async () => {

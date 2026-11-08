@@ -35,6 +35,7 @@ import { ensureStore, parseCrewArgs, probeMembers, refuseCrewOnWindows, resolveS
 import { candidateProbe, leadRoster, muxCandidateSources } from "./crew-delta.ts";
 import { explicitMux } from "./mux.ts";
 import { parseMuxProbe, type MuxProbeReport, type MuxProbeSighting } from "./mux-probe.ts";
+import { parsePersistenceReport, persistenceRemedy, type PersistenceReport } from "./persistence.ts";
 import { plainAdd, type AddEvent } from "./render.ts";
 import { sshConfigCandidates } from "./ssh-config.ts";
 import { withoutGitRelocators } from "./sys.ts";
@@ -801,6 +802,95 @@ export function updateStatusScript(root: string): string {
 }
 
 /**
+ * `collie doctor --only persistence --json` on the far machine — the persistent check, run by the
+ * member's own binary over the ssh the operator already authenticated.
+ *
+ * Both install layouts are tried, as {@link updateStatusScript} does: a staged install keeps the live
+ * binary under `current/`, and a checkout has only `bin/collie`. Exit 66 means no binary was found;
+ * an older member that does not know `--only` prints something the caller cannot parse, and the
+ * caller reports that as UNVERIFIED — never as ready, and never as a failed service.
+ */
+export function persistenceScript(root: string): string {
+  return [
+    "set -u",
+    `ROOT=${shqPath(root)}`,
+    'for _c in "$ROOT/current/bin/collie" "$ROOT/bin/collie"; do',
+    '  if [ -x "$_c" ]; then exec "$_c" doctor --only persistence --json; fi',
+    "done",
+    "exit 66",
+    "",
+  ].join("\n");
+}
+
+/** The persistent leg: run the member's own check and say, in layers, what is not ready. */
+async function persistenceLeg(
+  deps: Wired,
+  runner: RemoteRunner,
+  o: { readonly host: string; readonly root: string },
+): Promise<number> {
+  deps.emit({ kind: "line", stream: "out", tone: "info", text: `checking persistent runtime on ${o.host}…` });
+  const asked = await runner.run(persistenceScript(o.root));
+  const transport = transportFailure(deps.io, o.host, asked);
+  if (transport !== null) return transport;
+  if (asked.code === 66) {
+    deps.io.err(`error: ${o.host} has no Collie binary at ${o.root} to run the persistent check`);
+    deps.io.err("       the member was enrolled; its ordinary service is unchanged. Re-run after the install finishes.");
+    return EXIT.FAIL;
+  }
+  if (asked.code !== 0) {
+    const failedReport = parsePersistenceReport(asked.stdout);
+    if (failedReport !== null && !failedReport.ready) {
+      for (const line of persistenceFailureLines(o.host, failedReport)) deps.io.err(line);
+      deps.emit({ kind: "line", stream: "out", tone: "warn", text: `joined but not persistent: ${o.host} — ${failedReport.reasons.join(", ")}` });
+      return EXIT.FAIL;
+    }
+    // A non-zero exit can never prove success, whatever it printed on the way out. A binary that died after
+    // writing a stale `ready` row must not be read as a success.
+    deps.io.err(`error: ${o.host}'s persistent check exited ${asked.code} — ${errorLine(asked.stderr)}`);
+    deps.io.err("       The member is enrolled and its ordinary service is unchanged. Fix the check there, then re-run.");
+    deps.emit({ kind: "line", stream: "out", tone: "warn", text: `unverified: ${o.host} could not report its persistent runtime` });
+    return EXIT.FAIL;
+  }
+  const report = parsePersistenceReport(asked.stdout);
+  if (report === null) {
+    // The third error family, kept distinct from "not ready": a member this build cannot ask is
+    // UNVERIFIED. It is enrolled and may well be persistent; nobody has proved it either way.
+    deps.io.err(`error: ${o.host} did not return a persistent-runtime report this build can read.`);
+    deps.io.err("       The member is enrolled and its ordinary service is unchanged. Update it there, then re-run.");
+    deps.emit({ kind: "line", stream: "out", tone: "warn", text: `unverified: ${o.host} could not report its persistent runtime` });
+    return EXIT.FAIL;
+  }
+  if (report.ready) {
+    deps.emit({
+      kind: "line",
+      stream: "out",
+      tone: "info",
+      text: `✓ persistent  ${report.guarantee} — ${report.detail}`,
+    });
+    return EXIT.OK;
+  }
+  for (const line of persistenceFailureLines(o.host, report)) deps.io.err(line);
+  deps.emit({
+    kind: "line",
+    stream: "out",
+    tone: "warn",
+    text: `joined but not persistent: ${o.host} — ${report.reasons.join(", ")}`,
+  });
+  return EXIT.FAIL;
+}
+
+/** The layered refusal: what is not ready, and the one action that resolves it. */
+function persistenceFailureLines(host: string, report: PersistenceReport): string[] {
+  const reasons = report.reasons.filter((reason) => reason !== "ready").join(", ");
+  return [
+    `error: ${host} is joined, but its persistent runtime is not ready (${reasons}).`,
+    `       ${report.detail}`,
+    `       ${persistenceRemedy(report)}`,
+    "       The member and its trust record are kept; re-run `collie crew add --persistent` after fixing this.",
+  ];
+}
+
+/**
  * The run record inside whatever the far side printed, or null.
  *
  * Null covers three cases that are one answer to the caller: no binary there, a Collie old enough
@@ -1025,7 +1115,7 @@ const USAGE = [
   // the first of the five places that said "address" while meaning "host" (F8).
   "                      [--peer-address <bare-host>] [--address <lead-address>]",
   "                      [--label <name>] [--name <crew>] [--instance <name>]",
-  "                      [--mux <name>]",
+  "                      [--mux <name>] [--persistent]",
 ];
 
 /** Prompt copy shared by the abort path, so the non-interactive message names the real question. */
@@ -1267,7 +1357,12 @@ function watchRun(deps: Wired): RunWatch {
 }
 
 async function crewAddRun(deps: Wired, args: readonly string[]): Promise<number> {
-  const { positional, flags } = parseCrewArgs(args);
+  // `--persistent` is BARE: it must never consume the host that follows it. Every other flag here
+  // takes a value (`--force` keeps the parser's historical bare treatment and is otherwise inert),
+  // and the default parser would read `--persistent work-server` as a host named "work-server"
+  // belonging to the flag, which is exactly the silent misparse this list prevents.
+  const { positional, flags, bare } = parseCrewArgs(args, ["persistent", "force"]);
+  const persistent = bare.has("persistent");
   const named = positional[0];
   // No target is no longer a refusal — it is the candidate list ({@link chooseCandidateHost}).
   const chosen: Chosen =
@@ -1294,7 +1389,7 @@ async function crewAddRun(deps: Wired, args: readonly string[]): Promise<number>
   if (deps.terminal?.() === false && picks.some((pick) => pick.listed)) return declineWithoutTerminal(deps, picks);
   const [only] = picks;
   // One host reads exactly as it always did: no wrapper, no summary.
-  if (picks.length === 1 && only !== undefined) return await crewAddHost(deps, flags, only);
+  if (picks.length === 1 && only !== undefined) return await crewAddHost(deps, flags, only, undefined, persistent);
 
   // ── SEVERAL HOSTS: THE FULL RUN FOR EACH, ONE AFTER THE OTHER ──────────────
   // Nothing is shared between picks but the flags. Each one probes, confirms, installs, joins and
@@ -1307,22 +1402,28 @@ async function crewAddRun(deps: Wired, args: readonly string[]): Promise<number>
     // store is stale and an invite minted over it would write the roster back without that member.
     if (index > 0) await deps.store.refresh();
     const watch = watchRun(deps);
-    const code = await crewAddHost(watch.deps, flags, pick, watch.onDeclined);
+    const code = await crewAddHost(watch.deps, flags, pick, watch.onDeclined, persistent);
     // An operator's own No is not a failure: it leaves the exit code alone. Anything else counts.
     if (!watch.declined()) worst = Math.max(worst, code);
     const joined = watch.joinedAs();
     const runsOn = watch.runsOn();
     const ok = code === EXIT.OK && joined !== null;
+    // A successful join followed by a failed persistent check is NOT the same as a failed add. The
+    // member, its trust record and its ordinary service are already valid, and saying "failed" would
+    // hide the only fact the operator needs: the machine was added, but it is not persistent yet.
+    const unverified = !ok && joined !== null && !watch.declined();
     results.push({
       host: pick.host,
-      outcome: watch.declined() ? "declined" : ok ? "joined" : "failed",
+      outcome: watch.declined() ? "declined" : ok ? "joined" : unverified ? "joined-unverified" : "failed",
       line:
         watch.declined()
           ? "✗ declined"
           : ok
           ? // The rich view keeps only the last host's verdict, so each line carries its own mux.
             `✓ joined as "${joined}"${runsOn === null ? "" : `, runs on ${runsOn}`}`
-          : `✗ ${watch.firstError() ?? `crew add did not finish (exit ${code})`}`,
+          : unverified
+            ? `✓ joined as "${joined}" — persistent runtime not verified`
+            : `✗ ${watch.firstError() ?? `crew add did not finish (exit ${code})`}`,
     });
     if (watch.aborted()) {
       // Nobody can answer, so the picks that were never asked are no more answerable. They are listed
@@ -1337,14 +1438,14 @@ async function crewAddRun(deps: Wired, args: readonly string[]): Promise<number>
   summarise(deps, results);
   // One rule for one pick and for many: any failure keeps its own code; no failure and something
   // joined is OK even with declines; no failure and nothing joined is STATE, "Nothing was added".
-  const joinedAny = results.some((result) => result.outcome === "joined");
+  const joinedAny = results.some((result) => result.outcome === "joined" || result.outcome === "joined-unverified");
   return worst === EXIT.OK && !joinedAny ? EXIT.STATE : worst;
 }
 
 /** What became of one pick in a multi-host run. */
-type PickOutcome = "joined" | "declined" | "failed";
+type PickOutcome = "joined" | "joined-unverified" | "declined" | "failed";
 
-/** The per-host lines, then the count: `joined 2, declined 1, failed 0`. */
+/** The per-host lines, then the count: `joined 2, joined but not persistent 1, declined 0, failed 0`. */
 function summarise(
   deps: Wired,
   results: readonly { readonly host: string; readonly line: string; readonly outcome: PickOutcome }[],
@@ -1360,11 +1461,15 @@ function summarise(
     });
   }
   const count = (outcome: PickOutcome): number => results.filter((result) => result.outcome === outcome).length;
+  const unverified = count("joined-unverified");
   deps.emit({
     kind: "line",
     stream: "out",
-    tone: count("failed") > 0 ? "error" : "info",
-    text: `joined ${count("joined")}, declined ${count("declined")}, failed ${count("failed")}`,
+    tone: count("failed") > 0 || unverified > 0 ? "error" : "info",
+    text:
+      `joined ${count("joined")}` +
+      (unverified === 0 ? "" : `, joined but not persistent ${unverified}`) +
+      `, declined ${count("declined")}, failed ${count("failed")}`,
   });
 }
 
@@ -1387,6 +1492,7 @@ async function crewAddHost(
   flags: Readonly<Record<string, string>>,
   pick: HostPick,
   onDeclined: () => void = () => undefined,
+  persistent = false,
 ): Promise<number> {
   const host = pick.host;
   deps.emit({ kind: "title", host });
@@ -1486,6 +1592,7 @@ async function crewAddHost(
       route,
       leadVersion,
       repo: updateRepoOf(deps.ctx.env),
+      persistent,
       pickConfirm: pick.listed
         ? { memberId, name: pick.label ?? host, dial: pick.dial ?? host, onDeclined }
         : null,
@@ -1528,6 +1635,8 @@ interface AddOptions {
   readonly leadVersion: string;
   /** The `owner/repo` the member is told to install from — this lead's own (`updateRepoOf`). */
   readonly repo: string;
+  /** Verify the persistent-runtime conditions after enrollment; `crew add` without it is unchanged. */
+  readonly persistent: boolean;
   /** Set for a host chosen from the list: the id it will join as, and what to call when the pick is declined. */
   readonly pickConfirm: {
     readonly memberId: string;
@@ -1762,7 +1871,7 @@ async function addOverSsh(deps: Wired, runner: RemoteRunner, opts: AddOptions): 
 
   // ── Leg 4 — enroll ─────────────────────────────────────────────────────────
   deps.emit({ kind: "leg-start", leg: "enroll", text: "" });
-  return await enrollLeg(deps, runner, {
+  const enrolled = await enrollLeg(deps, runner, {
     host,
     root,
     port,
@@ -1770,8 +1879,16 @@ async function addOverSsh(deps: Wired, runner: RemoteRunner, opts: AddOptions): 
     flags,
     source: opts.source,
     changed: replaced || rebound,
+    persistent: opts.persistent,
     runsOn: configured.runsOn,
   });
+  if (enrolled !== EXIT.OK || !opts.persistent) return enrolled;
+  // ── The optional persistent check ──────────────────────────────────────────
+  // AFTER enrollment, and on the already-a-member path too: "already joined" is not "persistent".
+  // It runs the member's OWN `doctor --only persistence`, over the same authenticated ssh, so the
+  // judgement is the one the member would print itself and an older member is reported as unverified
+  // rather than guessed at.
+  return await persistenceLeg(deps, runner, { host, root });
 }
 
 /**
@@ -2382,6 +2499,8 @@ async function enrollLeg(
     source: string | null;
     /** Did this run replace the far machine's build or rewrite its bind? */
     changed: boolean;
+    /** Verify the lead→peer Crew link too, on the already-a-member path. */
+    persistent: boolean;
     /** The multiplexer leg 3 says the member runs on; null when none runs there. */
     runsOn: string | null;
   },
@@ -2446,6 +2565,31 @@ async function enrollLeg(
       if (o.changed) {
         const failed = await restartRemote(deps, runner, o.host, o.root);
         if (failed !== null) return failed;
+      }
+      // An SSH `doctor` that reads the member's own mux says nothing about whether THIS lead can
+      // dial the member over the crew link. In persistent mode the already-registered path must
+      // prove that link with the identity this lead already pins. A failure is not a re-enrollment:
+      // the registration and its certificates are kept, and no certificate is rotated.
+      if (o.persistent) {
+        const member = data.peers.find((peer) => peer.memberId === membership.memberId);
+        if (member === undefined) {
+          deps.io.err(`error: ${o.host} reports itself a member, but this lead's roster does not name it.`);
+          deps.io.err("       Run `collie crew status` here, or `collie leave` there and add it again.");
+          return EXIT.STATE;
+        }
+        const outcome = (await probeMembers(deps, data, [member])).get(member.memberId);
+        if (outcome?.ok !== true) {
+          deps.io.err(`error: ${o.host} is registered, but this lead cannot reach its Crew link at ${member.address}.`);
+          deps.io.err("       The registration and its certificates are kept. Fix reachability (front door, firewall,");
+          deps.io.err("       peer address) and re-run `collie crew add --persistent`; nothing was rotated.");
+          deps.emit({
+            kind: "line",
+            stream: "out",
+            tone: "warn",
+            text: `unverified: ${o.host} is registered, but its Crew link did not answer`,
+          });
+          return EXIT.FAIL;
+        }
       }
       deps.emit({
         kind: "verdict",

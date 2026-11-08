@@ -709,7 +709,7 @@ export const COMMANDS: readonly Command[] = [
   // one left out — no service manager, no front door, no store write.
   {
     name: "doctor",
-    summary: "check this install for the traps that fail silently (--json, --instance <name>)",
+    summary: "check this install for the traps that fail silently (--json, --only persistence, --instance <name>)",
     run: async (args, s) => {
       // The lane flag is read, and the name checked against this machine's instances, BEFORE the
       // context is built: an unknown name exits 2 with the list, and no check runs (M71/04).

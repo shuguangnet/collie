@@ -6,7 +6,7 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { HISTORY_REFRESH_MS } from "@/hooks/use-machine-history";
 import type { MachinesData } from "@/lib/loaders";
 import { server } from "@/test/setup";
-import { FIXTURE_MACHINES_TS, fixtureMachineHistory, fixtureMachines } from "@/test/machine-fixtures";
+import { FIXTURE_MACHINES_TS, fixtureMachineHistory, fixtureMachineRows, fixtureMachines } from "@/test/machine-fixtures";
 import { withHeaderHost } from "@/test/header-host";
 
 import { MachineRoute } from "./machine";
@@ -180,6 +180,52 @@ describe("the machine page", () => {
     renderMachine("attic");
     expect(await screen.findByText("unreachable")).toBeInTheDocument();
     expect(screen.getByText("Last reading 25m ago")).toBeInTheDocument();
+  });
+});
+
+describe("the persistence guidance", () => {
+  const health = (state: "reachable" | "unreachable" | "incompatible" | "conflicted"): MachinesData => ({
+    census: {
+      ts: FIXTURE_MACHINES_TS,
+      machines: [{ ...fixtureMachineRows[0]!, health: state }],
+    },
+    error: false,
+  });
+
+  it("says the page cannot promise the machine survives a logout, and gives the lead the command", async () => {
+    renderMachine("bluefin");
+    expect(await screen.findByRole("heading", { name: "Keeping this machine online" })).toBeInTheDocument();
+    expect(screen.getByText(/cannot see whether the machine survives a logout or reboot/)).toBeInTheDocument();
+    expect(screen.getByText("collie crew add <ssh-host> --mux herdr --persistent")).toBeInTheDocument();
+    expect(screen.getByText(/never starts a stopped Herdr/)).toBeInTheDocument();
+  });
+
+  it("says a green bridge is not proof of coming back, for a reachable machine", async () => {
+    renderMachine("bluefin", health("reachable"));
+    expect(await screen.findByText(/not proof it will come back after a logout or reboot/)).toBeInTheDocument();
+  });
+
+  it("keeps an offline machine's identity advice, for an unreachable machine", async () => {
+    renderMachine("bluefin", health("unreachable"));
+    expect(await screen.findByText(/do not pair it again/)).toBeInTheDocument();
+  });
+
+  it("asks for an update before the check can run, for an older machine", async () => {
+    renderMachine("bluefin", health("incompatible"));
+    expect(await screen.findByText(/Update it first/)).toBeInTheDocument();
+  });
+
+  it("sends a trust conflict to the lead, for a conflicted machine", async () => {
+    renderMachine("bluefin", health("conflicted"));
+    expect(await screen.findByText(/Collie will not accept a changed certificate/)).toBeInTheDocument();
+  });
+
+  it("shows the guidance on Status only, not in the Alerts view", async () => {
+    const user = userEvent.setup();
+    renderMachine("bluefin");
+    await screen.findByRole("heading", { name: "Keeping this machine online" });
+    await user.click(screen.getByRole("tab", { name: "Alerts" }));
+    expect(screen.queryByRole("heading", { name: "Keeping this machine online" })).toBeNull();
   });
 });
 

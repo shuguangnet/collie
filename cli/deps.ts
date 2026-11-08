@@ -10,6 +10,7 @@ import type { UpdateDeps } from "./update.ts";
 import { githubCredential } from "../bridge/update.ts";
 import { CrewOpsStore } from "../bridge/crew/ops-store.ts";
 import { TrustStore } from "../bridge/crew/trust-store.ts";
+import { readOwnSnapshot } from "./snapshot-read.ts";
 
 // The dependency sets a verb is handed, built from the real seams. They live HERE, and not in the
 // dispatcher, because `cli/main.ts` — the bootstrap that must run on a checkout whose `node_modules`
@@ -49,6 +50,10 @@ export function lifecycleDeps(io: Io, ui: Ui | null = null, opts: { readonly rep
     serve: (into) => Promise.resolve(cmdServe(into === undefined ? deps : { ...deps, io: into })),
     // Read by `start` to say where a multiplexer's machine list and the crew differ (M84/04).
     crew: { store: new TrustStore(ctx.stateDir), ops: new CrewOpsStore(ctx.stateDir) },
+    // `status --json` reads its own bridge once for the persistence verdict's mux half. A read, with
+    // the same local credential and budget as every other verb (`cli/snapshot-read.ts`).
+    snapshot: () =>
+      readOwnSnapshot({ ctx, files: realFiles, fetch: (url, init) => fetch(url, init) }),
   };
   return deps;
 }

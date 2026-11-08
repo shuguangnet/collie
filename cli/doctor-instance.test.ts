@@ -238,7 +238,7 @@ describe("the doctor verb", () => {
 
   test("the help summary names the flag", () => {
     expect(COMMANDS.find((c) => c.name === "doctor")?.summary).toBe(
-      "check this install for the traps that fail silently (--json, --instance <name>)",
+      "check this install for the traps that fail silently (--json, --only persistence, --instance <name>)",
     );
   });
 });

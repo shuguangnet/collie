@@ -1,16 +1,19 @@
 import { join } from "node:path";
 
 import type { Host } from "../bridge/host.ts";
+import type { JsonObject } from "../bridge/json.ts";
 import type { CrewMode } from "../bridge/types.ts";
 import { ensureBuild } from "./build.ts";
 import { collieVersion, type CliContext, type Environment, type EnvVars } from "./context.ts";
-import { binaryLayout, publishedRoot } from "./install-kind.ts";
+import { binaryLayout, classifyInstall, probeInstall, publishedRoot } from "./install-kind.ts";
 import { EXIT, type Io } from "./io.ts";
 import type { LinkReader } from "./link.ts";
 import { ensureMuxChosen, pickHostOf } from "./mux.ts";
 import { resolveMux } from "../bridge/mux/herdr-core/pick.ts";
 import type { StatusView, Ui } from "./render.ts";
 import { censusLines, type CensusReader } from "./census.ts";
+import type { SnapshotRead } from "./history.ts";
+import { judgePersistence, loginName, muxReachabilityFromSnapshot, persistenceJson, probePersistence } from "./persistence.ts";
 import { crewDelta, deltaLines, type CrewDeltaDeps } from "./crew-delta.ts";
 import { cmdServeStatus, cmdUnserve, crewModeOnDisk, type ServeDeps } from "./serve.ts";
 import { phoneBlocked, SETUP_CLOSING, setupFindings, setupLines } from "./setup-findings.ts";
@@ -118,6 +121,11 @@ export interface LifecycleDeps extends ServeDeps {
    * prints no such line, which is what every test that is not about it sees.
    */
   crew?: Pick<CrewDeltaDeps, "store" | "ops">;
+  /**
+   * This bridge's own `/api/snapshot`, for `status --json`'s persistence verdict. Absent reads as
+   * "the bridge was not asked", which leaves the mux half `unknown` — never a guessed `true`.
+   */
+  snapshot?: () => Promise<SnapshotRead>;
 }
 
 export type Tier = "systemd" | "launchd" | "taskscheduler" | "unsupervised";
@@ -1250,8 +1258,9 @@ export async function cmdStatus(
   const facts = await statusFacts(deps);
   if (args.includes("--json")) {
     const body = statusJson(facts);
+    const persistence = await statusPersistence(deps, facts);
     const read = census === null ? null : await census({ running: facts.running, crew: facts.crew });
-    deps.io.out(JSON.stringify(read === null ? body : { ...body, census: read }));
+    deps.io.out(JSON.stringify(read === null ? { ...body, persistence } : { ...body, persistence, census: read }));
     return EXIT.OK;
   }
   await printStatusBanner(deps, {}, facts);
@@ -1506,6 +1515,38 @@ function muxRowValue(facts: StatusFacts): string {
 }
 
 /**
+ * `status --json`'s persistence block: the SAME judgement `doctor --only persistence` prints, so a
+ * program reading status and an operator reading doctor can never get two answers. The mux half is
+ * read from this bridge's own snapshot; when that is not wired, it is unknown rather than assumed.
+ */
+async function statusPersistence(deps: LifecycleDeps, facts: StatusFacts): Promise<JsonObject> {
+  const read = deps.snapshot === undefined ? null : await deps.snapshot();
+  return persistenceJson(
+    judgePersistence(
+      probePersistence({
+        ctx: deps.ctx,
+        exec: deps.exec,
+        files: deps.files,
+        host: deps.host,
+        uid: deps.uid,
+        user: loginName({ ctx: deps.ctx, exec: deps.exec }),
+        tier: supervisionTier(deps.exec, deps.host, deps.ctx.env),
+        installKind:
+          deps.link === undefined
+            ? "unknown"
+            : classifyInstall(
+                probeInstall(
+                  { ctx: deps.ctx, exec: deps.exec, files: deps.files, link: deps.link, host: deps.host },
+                  deps.ctx.root,
+                ),
+              ).kind,
+        mux: { name: facts.mux, reachable: read === null ? null : muxReachabilityFromSnapshot(read) },
+      }),
+    ),
+  );
+}
+
+/**
  * `collie status --json`: the banner's facts as one object, for a program to read (the herdr-app mod
  * in `herdr-app-mod/collie/` is the first). `phoneUrl` is the URL a phone opens, or null where there
  * is none to give: a peer (the lead's door serves it), `COLLIE_SKIP_SERVE=1` without
@@ -1526,6 +1567,8 @@ export interface StatusJson {
   readonly mux: string;
   /** Why {@link mux} was picked with no `COLLIE_MUX`; `null` when it was named or is the default. */
   readonly muxPickedBecause: string | null;
+  /** The persistent-runtime judgement, identical to `doctor --only persistence --json`'s `data`. */
+  readonly persistence?: JsonObject;
 }
 
 export function statusJson(facts: StatusFacts): StatusJson {

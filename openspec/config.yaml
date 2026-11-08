@@ -1,0 +1,31 @@
+schema: spec-driven
+
+context: |
+  Language: zh-CN
+  All artifacts must be written in zh-CN.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+  Collie is a Bun/TypeScript bridge and React/Vite mobile PWA, currently version 1.28.0.
+  Read CLAUDE.md before changes; it is the authoritative working agreement.
+  Read openspec/project-analysis.md for the inspected project map and known deployment gaps.
+  Herdr is one local multiplexer adapter, not the product or a remote HTTP backend.
+  Multi-machine access uses Crew: phone -> lead -> peer Collie -> local multiplexer.
+  Existing crew-trust.json owns trust; crew-ops.json stores operator-local SSH hints only.
+  Operator SSH performs installation; runtime Crew links use pinned mutual TLS plus crew secret.
+  Never expose raw Herdr RPC, put SSH credentials on the phone, or bypass device pairing.
+  Review relevant accepted ADRs before proposing architecture changes.
+  This task is planning only. Do not implement runtime changes without user approval.
+
+rules:
+  proposal:
+    - Separate existing verified capabilities from proposed changes and deployment fixes.
+    - State non-goals and compatibility boundaries explicitly.
+  specs:
+    - Describe observable behavior and include testable failure and security scenarios.
+    - Do not describe an unverified Herdr daemon or headless launch command as supported.
+  design:
+    - Reuse current Crew enrollment, persistence, service and recovery mechanisms first.
+    - Distinguish bridge availability, multiplexer availability and phone authentication.
+    - Distinguish survives disconnect, starts at login and starts before login after reboot.
+  tasks:
+    - Keep implementation checkboxes unchecked during planning.
+    - Give each task a concrete verification and land tests and docs beside its implementation.

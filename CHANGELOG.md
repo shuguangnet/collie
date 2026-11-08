@@ -23,6 +23,10 @@ Running a crew? Update the lead first; members follow on their own. Details:
 
 ## [Unreleased]
 
+### Added
+
+- **Fixed machines can verify their persistent runtime before reporting success.** `collie crew add --persistent` checks the pinned Crew link, the member's actual supervisor and instance, Linux linger or macOS login requirements, and mux availability. `doctor --only persistence --json` and `status --json` share the verdict; the machine page explains recovery without changing device pairing.
+
 ### Fixed
 
 - **The math engine files carry no content hash.** The release check refused the Edge build because its one math pack named engine files by a hash that differed on every platform build, so the engines now keep fixed names under `math/`.

@@ -15,7 +15,7 @@ import { Segmented } from "@/components/ui/segmented";
 import { useLocale } from "@/hooks/use-locale";
 import { useMachineHistory, type MachineHistoryState } from "@/hooks/use-machine-history";
 import { useNav } from "@/hooks/use-nav";
-import { t } from "@/lib/i18n";
+import { t, type MessageKey } from "@/lib/i18n";
 import type { MachinesData } from "@/lib/loaders";
 import type { MachineRange } from "@/lib/machine-chart";
 import { machineReading } from "@/lib/machine-reading";
@@ -137,6 +137,7 @@ function MachineDetail({ id, given }: { id: string; given: MachineHistoryState |
                   multi={census.machines.length > 1}
                   onOpenAlerts={() => switchTab("alerts")}
                 />
+                <PersistenceCard health={row.health} />
                 {!older && (
                   <>
                     <Segmented
@@ -212,6 +213,38 @@ function NowCard({ row, ts, multi, onOpenAlerts }: { row: MachineRow; ts: number
         <div className={cn(stale && "opacity-60")}>
           <MachineLoad row={row} ts={ts} size="large" onOpenAlerts={onOpenAlerts} />
         </div>
+      </div>
+    </Card>
+  );
+}
+
+const PERSISTENCE_HEALTH = {
+  reachable: "machines.persistence.health.reachable",
+  unreachable: "machines.persistence.health.unreachable",
+  incompatible: "machines.persistence.health.incompatible",
+  conflicted: "machines.persistence.health.conflicted",
+} as const satisfies Record<MachineRow["health"], MessageKey>;
+
+/**
+ * What this page can and cannot promise about staying online. The census knows the connection
+ * Collie has now; whether the member survives a logout or reboot is decided on the member itself by
+ * `collie doctor --only persistence`. So the card says that in words, gives the lead the command,
+ * and never turns a green bridge into a claim of permanent uptime.
+ */
+function PersistenceCard({ health }: { health: MachineRow["health"] }) {
+  return (
+    <Card className="gap-0 py-0">
+      <div className="space-y-3 p-4 text-sm">
+        <h2 className="font-medium">{t("machines.persistence.title")}</h2>
+        <p className="text-muted-foreground">{t("machines.persistence.body")}</p>
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-muted-foreground">{t("machines.persistence.commandLabel")}</p>
+          <code className="block overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs">
+            {t("machines.persistence.command")}
+          </code>
+        </div>
+        <p>{t(PERSISTENCE_HEALTH[health])}</p>
+        <p className="text-xs text-muted-foreground">{t("machines.persistence.note")}</p>
       </div>
     </Card>
   );

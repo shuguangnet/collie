@@ -953,10 +953,25 @@ On Linux, enable lingering for unattended user services:
 loginctl enable-linger $USER
 ```
 
-Verify status with `systemctl --user status collie`.
+Verify status with `systemctl --user status collie`, or ask the one question the whole stack answers:
+
+```bash
+collie doctor --only persistence
+```
+
+It prints `unattended` only when this user's service is enabled, active and linger is on. Without
+linger the service stops with the last login session, and the check says `after-login` instead. It
+never enables linger or starts anything.
 
 On macOS, `start` manages `~/Library/LaunchAgents/herdr.collie.plist` automatically. It runs at user
-login. Check status with `launchctl print gui/$(id -u)/herdr.collie`.
+login. Check status with `launchctl print gui/$(id -u)/herdr.collie`, or run
+`collie doctor --only persistence`. The Mac guarantee is **after login** — never before the user
+logs in — and a Mac reached only over SSH is reported as `unsupervised`.
+
+`collie crew add <ssh-host> --persistent` runs this same check on the member after enrollment. A
+member that joins but is not persistent exits non-zero and says `joined but not persistent`; the
+member and its trust record are kept, so fix the named condition and re-run rather than pairing
+again.
 
 ---
 

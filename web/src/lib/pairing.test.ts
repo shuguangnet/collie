@@ -130,6 +130,48 @@ describe("bearer injection", () => {
   });
 });
 
+describe("recovery without re-pairing", () => {
+  it("a network timeout leaves the token and both latches alone", async () => {
+    setDeviceToken("tok-live");
+    server.use(http.get("/api/snapshot", () => HttpResponse.error()));
+    await expect(fetchSnapshot()).rejects.toThrow();
+    expect(getDeviceToken()).toBe("tok-live");
+    expect(authHeader()).toEqual({ authorization: "Bearer tok-live" });
+    expect(isNotPaired()).toBe(false);
+    expect(isPairingExpired()).toBe(false);
+  });
+
+  it("the same origin reopened still holds the token, which lives in storage not the module", () => {
+    setDeviceToken("tok-persist");
+    // A cold open drops the in-memory latch; the bearer is read from localStorage on every access.
+    __resetPairing();
+    expect(isNotPaired()).toBe(false);
+    expect(getDeviceToken()).toBe("tok-persist");
+    expect(authHeader()).toEqual({ authorization: "Bearer tok-persist" });
+  });
+
+  it("a bridge restart does not end the pairing: the next request presents the same token", async () => {
+    setDeviceToken("tok-live");
+    const seen: (string | null)[] = [];
+    const answer = () => {
+      server.use(
+        http.get("/api/snapshot", ({ request }) => {
+          seen.push(request.headers.get("authorization"));
+          return HttpResponse.json({ bridge: "connected", agents: [], ts: 0 });
+        }),
+      );
+    };
+    answer();
+    await fetchSnapshot();
+    // The bridge went away and came back: handlers reset, token untouched.
+    server.resetHandlers();
+    answer();
+    await fetchSnapshot();
+    expect(seen).toEqual(["Bearer tok-live", "Bearer tok-live"]);
+    expect(getDeviceToken()).toBe("tok-live");
+  });
+});
+
 describe("the not-paired latch", () => {
   it("latches on a write refused with the bridge's not-paired body", async () => {
     server.use(

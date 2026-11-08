@@ -114,6 +114,26 @@ On a host running multiple instances, prefix commands with `COLLIE_INSTANCE=<nam
 specific instance URL on the phone
 ([Multiple Collie instances on one host](deployment.md#multiple-collie-instances-on-one-host)).
 
+### Origin, instance, user and state directory
+
+A pairing belongs to one **origin** and one **instance**. The token lives in that origin's
+`localStorage`, and every request carries it as a bearer header — never in the URL, a query string or
+a fragment, so it does not land in proxy logs or browser history. Opening Collie at another origin,
+or at another instance's port, is a different storage area and needs its own `collie pair`; that is a
+deliberate boundary, not a bug to work around.
+
+The bridge runs as the **user who ran `collie start`**, and that user owns the state directory,
+`~/.local/state/collie/` unless `COLLIE_STATE_DIR` moves it. The paired-device registry, the local
+read secret and the crew files all live there. `COLLIE_INSTANCE` gives each lane its own service or
+plist, port and state directory, so a token minted for one lane is not a token for another.
+
+When the phone cannot read or write, separate the two layers before changing anything. A timeout, a
+refused connection or an offline PWA is a **network** problem: the token is still held and the next
+successful request works without pairing again. `403 device not paired` or `403 device expired` is an
+**authorisation** problem: run `collie pair` on the host and pair the phone again. Do not bypass the
+pairing gate, and do not put a token in a URL to "make it work" — neither is a supported recovery
+path.
+
 ### What unpair clears on the phone
 
 When a pairing ends, the phone deletes what Collie stored under it. This happens when you unpair the

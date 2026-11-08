@@ -61,6 +61,7 @@ import {
   type ConfigFileLayer,
   type ConfigFileReader,
 } from "../bridge/config-source.ts";
+import { asJsonBoolean, asJsonObject } from "../web/src/lib/json.ts";
 
 // `collie doctor`, against fakes for every seam. Like cli/crew.test.ts, NOTHING here reaches a
 // service manager, a tailnet, a real trust store or a network — and unlike it, there is nothing to
@@ -557,6 +558,85 @@ describe("collie doctor — the contract", () => {
     await cmdDoctor(h.deps, []);
     expect([...h.files.entries.keys()].toSorted()).toEqual([...before.keys()].toSorted());
     expect(h.files.ops).toEqual([]);
+  });
+});
+
+// ── The opt-in persistent check ─────────────────────────────────────────────
+// It is NOT part of the ordinary report: a host whose platform has no verified supervisor (Windows)
+// must not turn a healthy default `doctor` red. `--only persistence` asks the one question, reuses
+// the same judgement `status --json` carries, and exits non-zero only when the answer is not ready.
+
+describe("collie doctor --only persistence", () => {
+  const persistenceRun = async (h: Harness): Promise<{ code: number; raw: Finding[]; byCheck: Map<string, Finding> }> => {
+    const code = await cmdDoctor(h.deps, ["--only", "persistence", "--json"]);
+    // SAFETY: the branch prints exactly the `Finding[]` it serialised, as the ordinary `--json` does.
+    const raw = JSON.parse(h.io.stdout.join("\n")) as Finding[];
+    return { code, raw, byCheck: new Map(raw.map((f) => [f.check, f])) };
+  };
+
+  test("--only accepts persistence and refuses any other section before running a check", async () => {
+    const h = harness(null);
+    expect(await cmdDoctor(h.deps, ["--only", "mux"])).toBe(EXIT.USAGE);
+    expect(h.io.stdout).toEqual([]);
+    expect(h.io.stderr.join("\n")).toContain("--only accepts `persistence`");
+    expect(h.calls).toEqual([]);
+  });
+
+  test("it prints the overall verdict and the three layers, all carrying the same report", async () => {
+    const h = harness(null, [], { env: { USER: "pat" } });
+    const run = await persistenceRun(h);
+    expect([...run.byCheck.keys()]).toEqual([
+      "persistence",
+      "persistence-service",
+      "persistence-login",
+      "persistence-mux",
+    ]);
+    const overall = run.byCheck.get("persistence")!;
+    const data = asJsonObject(overall.data) ?? {};
+    expect(asJsonBoolean(data.ready)).toBe(false);
+    expect(Array.isArray(data.reasons)).toBe(true);
+    for (const f of run.raw) expect(f.data).toEqual(overall.data);
+    // A host with no readable service is not ready, so the one-question verb exits non-zero.
+    expect(run.code).toBe(EXIT.FAIL);
+  });
+
+  test("the ordinary report grows no persistence row", async () => {
+    const h = harness(null);
+    const run = await findings(h);
+    expect([...run.byCheck.keys()].some((key) => key.startsWith("persistence"))).toBe(false);
+  });
+
+  test("a Linux member is ready when its service, linger and mux all answer", async () => {
+    const h = harness(null, [new Response(JSON.stringify({ bridge: "connected" }))], {
+      env: { USER: "pat" },
+      files: { [`${HOME}/.config/systemd/user/collie.service`]: "[Unit]\n" },
+      answers: [
+        ...HEALTHY_ANSWERS,
+        ["systemctl --user is-enabled", { stdout: "enabled\n" }],
+        ["systemctl --user is-active", { stdout: "active\n" }],
+        [
+          "systemctl --user show",
+          {
+            stdout: [
+              "LoadState=loaded",
+              `FragmentPath=${HOME}/.config/systemd/user/collie.service`,
+              "UnitFileState=enabled",
+              "ExecStart={ path=/opt/collie/bin/collie ; argv[]=/opt/collie/bin/collie _exec-bridge ; ignore_errors=no ; pid=0 ; status=0/0 }",
+            ].join("\n"),
+          },
+        ],
+        ["loginctl show-user pat", { stdout: "Linger=yes\n" }],
+      ],
+    });
+    // The fake filesystem's owner is 1000; production reads the process's own uid.
+    const run = await persistenceRun({ ...h, deps: { ...h.deps, host: hostFor("linux"), uid: () => 1000 } });
+    expect(run.byCheck.get("persistence")?.status).toBe("ok");
+    expect(run.byCheck.get("persistence")?.data).toMatchObject({
+      ready: true,
+      guarantee: "unattended",
+      muxReachable: true,
+    });
+    expect(run.code).toBe(EXIT.OK);
   });
 });
 

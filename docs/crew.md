@@ -90,6 +90,31 @@ one. The last line counts them: `joined 2, declined 1, failed 0`. Any failure ma
 non-zero. With no failure it is 0 when something joined, and 3 when nothing did, for example when
 you declined every machine.
 
+### Ask for a persistent member
+
+`collie crew add <ssh-host> --persistent` runs the same add, then asks the member's own
+`collie doctor --only persistence --json` over the same ssh. The flag is bare: it never consumes the
+host after it, and `--persistent <ssh-host>` reads the same as `<ssh-host> --persistent`.
+
+The check is read-only and reports what that machine can actually promise:
+
+- **Linux** needs this user's `systemd --user` service to be enabled and active, and linger to be on.
+  With linger, the bridge survives the last logout and a reboot; without it, it survives only as long
+  as the login session.
+- **macOS** needs the launchd job Collie manages to be loaded and running. That is an after-login
+  guarantee: a Mac that rebooted to a login window has not started the bridge yet.
+- **Windows** keeps its existing Task Scheduler behaviour. `--persistent` reports it as unsupported
+  rather than claiming a guarantee this build does not verify.
+- The configured multiplexer must answer as well. A bridge can be online while Herdr is stopped, and
+  that is reported as `mux-unreachable`, not as a persistent success.
+
+The check never runs `sudo`, never enables linger for you, and never starts a stopped Herdr. If the
+join succeeds but the check does not, the run exits non-zero and says `joined but not persistent`,
+with the one action that resolves it. The member, its certificate and its trust record are kept, so
+fix the named condition and re-run the same command; it does not enroll a second member. With several
+picks the summary counts that outcome separately, for example
+`joined 1, joined but not persistent 1, declined 0, failed 0`.
+
 `collie crew remove` is local, so a machine you removed still answers as a member until you run
 `collie leave` there. `crew add` does not call that machine a member. It prints `✗ not joined`, says
 to run `collie leave` on it and add it again, and exits non-zero.

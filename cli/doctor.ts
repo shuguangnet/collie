@@ -90,7 +90,8 @@ import { linkPath, type LinkReader, realLinkFs, resolveLinkTarget } from "./link
 import { classifyExe, exePathOf, type ExeEvidence } from "../bridge/exe-replaced.ts";
 import { queryTask, taskOwner, windowsPathKey } from "./task-scheduler.ts";
 import { agentLabel, collieBinary, unitName } from "./unit.ts";
-import { pidFilePath } from "./lifecycle.ts";
+import { pidFilePath, supervisionTier } from "./lifecycle.ts";
+import { judgePersistence, loginName, muxReachabilityFromSnapshot, persistenceFindings, probePersistence } from "./persistence.ts";
 import { DEFAULT_COLUMNS, type Ui } from "./render.ts";
 import { layoutFindings } from "./doctor-layout.ts";
 import {
@@ -174,6 +175,11 @@ export interface DoctorDeps {
    */
   readonly beacons: BeaconSweepDeps;
   readonly now: () => number;
+  /**
+   * The uid this machine's user service must belong to, for the opt-in persistence check. Absent
+   * reads as the process's own uid, which is what production wants; tests pin it.
+   */
+  readonly uid?: () => number;
   /** The path rules and binary name this run judges the install by (`bridge/host.ts`). */
   readonly host: Host;
   /**
@@ -218,7 +224,17 @@ const CLOCK_WARN_MS = 2 * 60_000;
 
 /** `collie doctor [--json]`. Exit 0 unless some check is error-severity. */
 export async function cmdDoctor(deps: DoctorDeps, args: readonly string[]): Promise<number> {
-  const { bare } = parseCrewArgs(args, ["json"]);
+  const { bare, flags } = parseCrewArgs(args, ["json"]);
+  const only = flags.only;
+  if (only !== undefined && only !== "persistence") {
+    deps.io.err(`error: --only accepts \`persistence\`, not \`${only === "" ? "(nothing)" : only}\`.`);
+    return EXIT.USAGE;
+  }
+  // The persistent-runtime section is opt-in, and deliberately so: its verdict is an `error` on
+  // every host whose platform has no verified supervision scheme (Windows today), and a default
+  // `doctor` must not fail a perfectly healthy install just because it is not a Linux server. The
+  // ordinary report is byte-for-byte what it always was.
+  if (only === "persistence") return await persistenceOnly(deps, bare.has("json"));
   const data = await deps.store.load();
   const { mode } = deriveMode(enrollmentOf(data));
   const inCrew = data !== null && data.crew !== null;
@@ -403,6 +419,33 @@ export async function cmdDoctor(deps: DoctorDeps, args: readonly string[]): Prom
   } else {
     await render(deps, data, mode, local, crew);
   }
+  return findings.some((f) => f.status === "error") ? EXIT.FAIL : EXIT.OK;
+}
+
+/**
+ * `collie doctor --only persistence`: the same judgement `status --json` and the remote leg of
+ * `crew add --persistent` read. One snapshot read supplies the mux half; a bridge that does not
+ * answer leaves the mux unknown rather than guessing from a socket file.
+ */
+async function persistenceOnly(deps: DoctorDeps, json: boolean): Promise<number> {
+  const chosen = muxSettings(deps);
+  const snapshot = await readOwnSnapshot({ ctx: deps.ctx, files: deps.files, fetch: deps.fetch });
+  const report = judgePersistence(
+    probePersistence({
+      ctx: deps.ctx,
+      exec: deps.exec,
+      files: deps.files,
+      host: deps.host,
+      uid: deps.uid ?? (() => process.getuid?.() ?? 0),
+      user: loginName({ ctx: deps.ctx, exec: deps.exec }),
+      tier: supervisionTier(deps.exec, deps.host, deps.ctx.env),
+      installKind: classifyInstall(probeInstall(deps, deps.ctx.root)).kind,
+      mux: { name: chosen.name, reachable: muxReachabilityFromSnapshot(snapshot) },
+    }),
+  );
+  const findings = persistenceFindings(report);
+  if (json) deps.io.out(JSON.stringify(findings, null, 2));
+  else for (const line of layoutFindings(findings, deps.columns ?? DEFAULT_COLUMNS)) deps.io.out(line);
   return findings.some((f) => f.status === "error") ? EXIT.FAIL : EXIT.OK;
 }
 

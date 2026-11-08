@@ -113,7 +113,10 @@ server reached over SSH, keep it running after logout and reboots:
 loginctl enable-linger $USER
 ```
 
-See [Surviving reboots](upgrading.md#surviving-reboots) for details.
+See [Surviving reboots](upgrading.md#surviving-reboots) for details. To check what this machine
+actually guarantees, run `collie doctor --only persistence`: it reads the user service, linger and
+the multiplexer without changing anything, and says `unattended` only when all three are in place.
+A member added with `collie crew add --persistent` runs the same check on itself.
 
 ### Arch Linux and Omarchy
 
@@ -158,7 +161,11 @@ PATH. The Tailscale app for Mac can install that command from its settings.
 
 > **Note.** A Mac reached only over SSH has no login session for launchd. `collie start` reports
 > this and runs the bridge in the background without supervision: no restart on failure, nothing
-> at login.
+> at login. `collie doctor --only persistence` calls that `unsupervised`, and
+> `collie crew add --persistent` refuses to call such a member persistent.
+
+The launchd guarantee is **after login**: a Mac that rebooted to a login window has not started the
+bridge yet. The persistent check says so rather than promising unattended uptime.
 
 macOS has no package yet. [mise](#mise) works on a Mac, as does the `aarch64-darwin`
 [Nix](#nix) output.
@@ -424,7 +431,9 @@ again. `collie doctor` repeats the same check.
 The bridge runs as a `systemd --user` service or macOS launchd agent. It starts at login and
 restarts on failure ([`ARCHITECTURE.md`](../ARCHITECTURE.md) §3). On Linux,
 `loginctl enable-linger $USER` keeps it running across reboots
-([Surviving reboots](upgrading.md#surviving-reboots)).
+([Surviving reboots](upgrading.md#surviving-reboots)). `collie doctor --only persistence` prints the
+same conditions as one verdict, and `collie crew add --persistent` runs it on a member before
+calling that member persistent.
 
 Configure user access in [Configure](configure.md#configure) and device access via
 [pairing](security.md#pair-a-device--the-write-credential) (`collie pair`).

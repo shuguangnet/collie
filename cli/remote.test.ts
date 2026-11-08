@@ -41,6 +41,7 @@ import {
   crewAddDeps,
   parseMembership,
   parseProbe,
+  persistenceScript,
   probeScript,
   restartScript,
   shq,
@@ -65,7 +66,7 @@ import { hostFor } from "../bridge/host.ts";
 
 // ── The fake transport ───────────────────────────────────────────────────────
 
-type Leg = "probe" | "install" | "configure" | "membership" | "enroll" | "restart" | "mux-probe";
+type Leg = "probe" | "install" | "configure" | "membership" | "enroll" | "restart" | "mux-probe" | "persistence";
 
 /** Which leg a script is, read off the script itself — so a test never depends on call ordering. */
 function legOf(script: string): Leg {
@@ -74,6 +75,7 @@ function legOf(script: string): Leg {
   if (script.includes("collie-configure:")) return "configure";
   if (script.includes("crew status --no-probe")) return "membership";
   if (script.includes("_mux-probe")) return "mux-probe";
+  if (script.includes("doctor --only persistence --json")) return "persistence";
   if (script.includes('"$ROOT/bin/collie" restart')) return "restart";
   if (script.includes("'join'")) return "enroll";
   throw new Error(`unrecognised leg script:\n${script}`);
@@ -146,6 +148,67 @@ const SOLO_STATUS = [
   "mode: solo — this collie is not in a crew (no trust store, or an empty one).",
   "  `collie crew invite` here makes it a lead; `collie join …` makes it a peer.",
 ].join("\n");
+
+/**
+ * What `collie doctor --only persistence --json` prints on a member, in the one row the remote leg
+ * reads. Kept as the real array shape (not a bare object) so the test exercises the same parser a
+ * mixed-version fleet does.
+ */
+const PERSISTENT_READY = JSON.stringify([
+  {
+    check: "persistence",
+    status: "ok",
+    detail: "systemd user service enabled, active, linger on; herdr answers",
+    remedy: null,
+    data: {
+      ready: true,
+      guarantee: "unattended",
+      platform: "linux",
+      supervisionTier: "systemd",
+      installKind: "binary",
+      instance: null,
+      identity: "current",
+      durability: "persistent",
+      serviceEnabled: true,
+      serviceActive: true,
+      loginRequirement: "none",
+      linger: true,
+      launchdDomain: null,
+      muxName: "herdr",
+      muxReachable: true,
+      reasons: ["ready"],
+      detail: "systemd user service enabled, active, linger on; herdr answers",
+    },
+  },
+]);
+
+const PERSISTENT_NOT_READY = JSON.stringify([
+  {
+    check: "persistence",
+    status: "error",
+    detail: "systemd user service enabled, active, linger off; herdr answers",
+    remedy: "`loginctl enable-linger $USER` once on that machine (may need policy approval)",
+    data: {
+      ready: false,
+      guarantee: "after-login",
+      platform: "linux",
+      supervisionTier: "systemd",
+      installKind: "binary",
+      instance: null,
+      identity: "current",
+      durability: "persistent",
+      serviceEnabled: true,
+      serviceActive: true,
+      loginRequirement: "after-login",
+      linger: false,
+      launchdDomain: null,
+      muxName: "herdr",
+      muxReachable: true,
+      reasons: ["linger-disabled"],
+      detail: "systemd user service enabled, active, linger off; herdr answers",
+    },
+  },
+]);
 
 type LegAnswers = Partial<Record<Leg, Partial<RemoteResult>>>;
 
@@ -306,9 +369,11 @@ function harness(opts: HarnessOptions = {}): Harness {
               ? muxProbeOut(["herdr"])
               : leg === "membership"
                 ? SOLO_STATUS
-                : leg === "install"
-                  ? `collie-install:root=${REMOTE_CHECKOUT}\ncollie-install:version=${VERSION}`
-                  : "";
+                : leg === "persistence"
+                  ? PERSISTENT_READY
+                  : leg === "install"
+                    ? `collie-install:root=${REMOTE_CHECKOUT}\ncollie-install:version=${VERSION}`
+                    : "";
         const fallback: RemoteResult = { code: 0, stdout, stderr: "", spawned: true };
         return { ...fallback, ...canned };
       },
@@ -409,6 +474,7 @@ const GOLDEN: [file: string, script: string][] = [
   ],
   ["leg3-mux-probe.sh", muxProbeScript("/home/pat/.collie")],
   ["leg4-membership.sh", membershipScript("/home/pat/.collie")],
+  ["leg5-persistence.sh", persistenceScript("/home/pat/.collie")],
   // Not one of `crew add`'s legs — `crew update` drives it, and it is pinned here with the rest
   // because it is the same kind of thing: a program this machine writes and another one runs.
   ["restart.sh", restartScript("/home/pat/.collie")],
@@ -2260,6 +2326,153 @@ describe("re-running against the same host", () => {
     expect(await run(h)).toBe(EXIT.STATE);
     expect(text(h.io)).toContain("`collie leave` THERE first");
     expect(h.calls.map((c) => c.leg)).not.toContain("enroll");
+  });
+});
+
+// ── `--persistent` ───────────────────────────────────────────────────────────
+// The flag is bare, so it can never eat the host. The check runs AFTER enrollment (and on the
+// already-a-member path), on the member's own binary, and a failed check is a non-zero exit that
+// still leaves the join and its trust record in place.
+
+describe("crew add --persistent", () => {
+  const members = (h: Harness): string[] => (h.data()?.peers ?? []).map((p) => p.memberId);
+
+  test("the flag is bare: the host after it is still the target", async () => {
+    for (const args of [
+      ["nas.example", "--persistent"],
+      ["--persistent", "nas.example"],
+    ]) {
+      const h = harness({ answers: { persistence: { stdout: PERSISTENT_READY } } });
+      expect(await run(h, args)).toBe(EXIT.OK);
+      expect(h.calls.every((c) => c.host === "nas.example")).toBe(true);
+      expect(h.calls.map((c) => c.leg)).toContain("persistence");
+    }
+  });
+
+  test("without the flag the member is never asked, and the run is unchanged", async () => {
+    const h = harness();
+    expect(await run(h)).toBe(EXIT.OK);
+    expect(h.calls.map((c) => c.leg)).not.toContain("persistence");
+  });
+
+  test("a ready member ends green and says what the guarantee is", async () => {
+    const h = harness({ answers: { persistence: { stdout: PERSISTENT_READY } } });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.OK);
+    expect(text(h.io)).toContain("✓ persistent  unattended");
+    expect(text(h.io)).toContain('✓ "nas" is a member of "the herd"');
+  });
+
+  test("a joined member that is not persistent keeps the join and still exits non-zero", async () => {
+    const h = harness({ answers: { persistence: { stdout: PERSISTENT_NOT_READY } } });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.FAIL);
+    expect(text(h.io)).toContain("joined but not persistent: nas.example — linger-disabled");
+    expect(text(h.io)).toContain("loginctl enable-linger");
+    // The join had already succeeded; only the optional check failed.
+    expect(text(h.io)).toContain('✓ "nas" is a member of "the herd"');
+    expect(text(h.io)).toContain("The member and its trust record are kept");
+  });
+
+  test("a failed doctor exit preserves its valid not-ready diagnosis and registration", async () => {
+    const h = harness({ answers: { persistence: { code: 1, stdout: PERSISTENT_NOT_READY } } });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.FAIL);
+    expect(text(h.io)).toContain("linger-disabled");
+    expect(text(h.io)).toContain("loginctl enable-linger");
+    expect(text(h.io)).toContain("The member and its trust record are kept");
+    expect(text(h.io)).not.toContain("✓ persistent");
+    expect(text(h.io)).toContain('✓ "nas" is a member of "the herd"');
+  });
+
+  test("an already-a-member re-run is checked too: already joined is not persistent", async () => {
+    const h = harness({
+      store: leadStore({ peers: [member({ memberId: "nas", address: "100.64.0.9:8787" })] }),
+      answers: {
+        probe: { stdout: probeOut({ checkout: REMOTE_CHECKOUT, commit: COMMIT, envhost: "100.64.0.9" }) },
+        membership: { stdout: ["crew   the herd  (crew-1)", "mode   peer", "self   nas  abcd…"].join("\n") },
+        persistence: { stdout: PERSISTENT_NOT_READY },
+      },
+    });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.FAIL);
+    expect(text(h.io)).toContain('✓ already a member of "the herd" as "nas"');
+    expect(text(h.io)).toContain("joined but not persistent");
+    expect(members(h)).toContain("nas");
+  });
+
+  test("an older member that cannot report is unverified, not a false ready and not a lost join", async () => {
+    const h = harness({ answers: { persistence: { stdout: "collie: unknown option --only" } } });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.FAIL);
+    expect(text(h.io)).toContain("did not return a persistent-runtime report this build can read");
+    expect(text(h.io)).toContain("unverified: nas.example");
+    expect(text(h.io)).toContain('✓ "nas" is a member of "the herd"');
+  });
+
+  test("no binary to run the check is its own failure, distinct from an unready service", async () => {
+    const h = harness({ answers: { persistence: { code: 66 } } });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.FAIL);
+    expect(text(h.io)).toContain("has no Collie binary");
+    expect(text(h.io)).not.toContain("not persistent");
+    expect(text(h.io)).toContain('✓ "nas" is a member of "the herd"');
+  });
+
+  test("a non-zero exit is not a report, even when stdout claims ready", async () => {
+    const h = harness({ answers: { persistence: { code: 1, stdout: PERSISTENT_READY } } });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.FAIL);
+    expect(text(h.io)).toContain("persistent check exited 1");
+    expect(text(h.io)).not.toContain("✓ persistent");
+    expect(text(h.io)).toContain("unverified: nas.example");
+    expect(text(h.io)).toContain('✓ "nas" is a member of "the herd"');
+  });
+
+  test("a repeated add in persistent mode proves the lead→peer Crew link, and keeps the registration when it fails", async () => {
+    const h = harness({
+      store: leadStore({ peers: [member({ memberId: "nas", address: "100.64.0.9:8787" })] }),
+      reachable: false,
+      answers: {
+        probe: { stdout: probeOut({ checkout: REMOTE_CHECKOUT, commit: COMMIT, envhost: "100.64.0.9" }) },
+        membership: { stdout: ["crew   the herd  (crew-1)", "mode   peer", "self   nas  abcd…"].join("\n") },
+        persistence: { stdout: PERSISTENT_READY },
+      },
+    });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.FAIL);
+    expect(text(h.io)).toContain("cannot reach its Crew link");
+    expect(text(h.io)).toContain("nothing was rotated");
+    expect(text(h.io)).toContain("unverified: nas.example is registered");
+    expect(members(h)).toContain("nas");
+    // The far-side doctor never ran: an unreachable link is decided by this lead, before the check.
+    expect(h.calls.map((c) => c.leg)).not.toContain("persistence");
+  });
+
+  test("ssh dropping during the check is UNREACHABLE, not a persistence verdict", async () => {
+    const h = harness({ answers: { persistence: { code: 255, stderr: "Connection timed out\n" } } });
+    expect(await run(h, ["nas.example", "--persistent"])).toBe(EXIT.UNREACHABLE);
+    expect(text(h.io)).toContain("ssh could not reach nas.example");
+    expect(text(h.io)).not.toContain("not persistent");
+    expect(text(h.io)).toContain('✓ "nas" is a member of "the herd"');
+  });
+
+  test("the script runs the member's own doctor and carries no secret or URL", () => {
+    const script = persistenceScript("/home/pat/.collie");
+    expect(script).toContain("doctor --only persistence --json");
+    expect(script).not.toMatch(/https?:\/\//);
+    expect(script).not.toMatch(/\|\s*(ba)?sh\b/);
+  });
+
+  test("several hosts summarise a join whose check failed as joined but not persistent", async () => {
+    const h = harness({
+      sshConfig: "Host attic\nHost build-box",
+      prompt: "all",
+      answers: { persistence: { stdout: PERSISTENT_NOT_READY } },
+      afterEach: [
+        leadStore({ peers: [member({ memberId: "nas", address: "100.64.0.9:8787" })] }),
+        leadStore({ peers: [member({ memberId: "build-box", address: "100.64.0.10:8787" })] }),
+      ],
+    });
+    // `all` adds every candidate; each joins, then each fails its persistent check.
+    expect(await run(h, ["--persistent"])).toBe(EXIT.FAIL);
+    expect(text(h.io)).toContain("joined but not persistent 2");
+    // Both hosts did join — the summary says so — and only the optional check failed.
+    expect(h.calls.filter((c) => c.leg === "enroll")).toHaveLength(2);
+    expect(text(h.io)).toContain('✓ joined as "nas"');
+    expect(text(h.io)).toContain('✓ joined as "build-box"');
   });
 });
 

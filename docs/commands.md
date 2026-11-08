@@ -14,7 +14,7 @@ If the host runs multiple instances, prepend `COLLIE_INSTANCE=<name>` to every v
 | **Start** | `collie start` | Build if needed, serve, print the URL |
 | **Stop** | `collie stop` | Pause the bridge; removes nothing |
 | **Restart** | `collie restart` | Stop, then start |
-| **Status** | `collie status` · `collie status --verbose` · `collie status --json` | The *Collie is running* banner + URLs, then three short blocks: the crew's members (name, link, version, mux, panes), the paired devices, and the agent sessions by state. `--verbose` adds the `tailscale serve` dump. `--json` prints the same facts as one line of JSON for a program to read: `running`, `version`, `instance`, `port`, `localUrl`, `phoneUrl`, `crew`, `service`, `pairedDevices`, `mux`, `muxPickedBecause` and `census` (see below) |
+| **Status** | `collie status` · `collie status --verbose` · `collie status --json` | The *Collie is running* banner + URLs, then three short blocks: the crew's members (name, link, version, mux, panes), the paired devices, and the agent sessions by state. `--verbose` adds the `tailscale serve` dump. `--json` prints the same facts as one line of JSON for a program to read: `running`, `version`, `instance`, `port`, `localUrl`, `phoneUrl`, `crew`, `service`, `pairedDevices`, `mux`, `muxPickedBecause`, `persistence` and `census` (see below) |
 | **Serve status** | `collie serve status` | Print what `tailscale serve` publishes on this machine, which is every front door on it and not only Collie's. Read only. `collie status --verbose` prints the same |
 | **URL** | `collie url` | Print the tailnet URL |
 | **QR** | `collie qr` | The same URL as a scannable code |
@@ -63,7 +63,13 @@ folder, the same way `collie doctor` does. It never sends a Tailscale header. Th
 the same dials as `collie crew status` (a `hello` and a `snapshot` per member), and the dials run at
 the same time.
 
-`collie status --json` keeps every key it had and adds `census`, an object with three parts:
+`collie status --json` keeps every key it had and adds `persistence` and `census`. `persistence` is
+the same judgement `collie doctor --only persistence --json` prints: `ready`, `guarantee`
+(`unattended`, `after-login`, `unsupervised`, `unsupported` or `unknown`), `platform`,
+`supervisionTier`, `serviceEnabled`, `serviceActive`, `loginRequirement`, `linger`, `launchdDomain`,
+`muxName`, `muxReachable`, `reasons` and `detail`. The mux half is read from this bridge's own
+snapshot; when that read is not available it is `null` and `mux-unknown`, never a guessed ready.
+`census` is an object with three parts:
 `members` (a list of `{ name, role, link, version, mux, panes, host }`, empty without a crew), `devices`
 (`{ count, names }`) and `sessions` (`{ read, refusedWith, total, byState, withSessionId }`).
 `read` is `ok`, `bridge-not-running`, `refused` or `unreadable`. When it is not `ok`, `total`,
@@ -81,6 +87,17 @@ entry. To read a lane without exporting anything, run `collie doctor --instance 
 that lane and wins over `COLLIE_INSTANCE`; `--instance default` reads the unsuffixed one. A name
 this machine has no config for stops with exit 2 and lists the instances it does have. Only
 `doctor` takes the flag. Every other command still reads `COLLIE_INSTANCE`.
+
+**`collie doctor --only persistence` asks one question.** It runs the read-only persistent-runtime
+check alone and prints one overall `persistence` verdict plus the three layers an operator has to
+tell apart: `persistence-service` (the Linux user service or macOS launchd job), `persistence-login`
+(linger on Linux, after-login on macOS) and `persistence-mux` (whether the configured multiplexer
+answers). `--json` keeps doctor's array-of-findings shape and puts the machine-readable report in
+each row's `data`, so a script reads `ready`, `guarantee` and the stable `reasons` codes. Exit 1 means
+the machine is not ready for the guarantee it claims, not that doctor itself failed. On Windows and
+other platforms the check reports `unsupported` rather than inventing a guarantee. This is the same
+judgement `collie status --json` carries and the remote leg of `collie crew add --persistent` runs
+on the member.
 
 **`collie doctor` lists your agent programs.** Each program Collie has an input profile for gets
 one `harness-<name>` row: the file Collie would run on your login shell's `PATH`, the version it
