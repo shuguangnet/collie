@@ -2,6 +2,9 @@ import { mkdir, realpath } from "node:fs/promises";
 import { isIP } from "node:net";
 import { homedir, hostname, networkInterfaces } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, normalize, sep } from "node:path";
+
+import { fileMachineProfilesIo, MachineProfilesStore } from "./machine-profiles.ts";
+import { serveMachineProfilesRoute } from "./machine-profiles-http.ts";
 import { createAccessGate, DOOR_PRESETS, FORWARDING_HEADERS } from "./access-jwt.ts";
 import type { JsonObject, JsonValue } from "./json.ts";
 import type { ActivityLedger } from "./activity.ts";
@@ -1489,8 +1492,10 @@ export function startServer(opts: {
    * front door (ADR 0013), and its own load already reaches the lead beside its snapshot.
    */
   machines?: MachineSurface;
+  machineProfiles?: MachineProfilesStore;
 }) {
   const { cfg, registry, push, snooze, notifyPrefs, updateMonitor, audit, activity, crew } = opts;
+  const machineProfiles = opts.machineProfiles ?? new MachineProfilesStore(fileMachineProfilesIo(cfg.stateDir));
   // The prompt-cache ledger, built in bridge/index.ts beside the journal registry it probes through,
   // because the state engine's poll is what drives it and that poll is wired there. Undefined when
   // `COLLIE_TRANSCRIPT` is off: no journal, no probe, and every pane reads exactly as it did in 1.8.2.
@@ -4437,6 +4442,15 @@ export function startServer(opts: {
           return jsonError(apiError("crew.not_lead"), 404, req.headers.get("accept-encoding"));
         }
         return json(body, req.headers.get("accept-encoding"));
+      }
+      if (pathname === "/api/machine-profiles") {
+        const denied = guard(req, cfg, req.method === "GET" ? "read" : "write", pairingGate);
+        if (denied) return denied;
+        return secure((await serveMachineProfilesRoute(req, pathname, {
+          gate: (level) => guard(req, cfg, level, pairingGate),
+          device: () => whois(req).device,
+          audit: (entry) => audit.record(entry),
+        }, machineProfiles, machines !== undefined))!);
       }
       // ── Machines: every machine's load, kept by the lead (ADR 0084) ──────
       // Global routes, never forwardable: see `serveMachinesRoute`.

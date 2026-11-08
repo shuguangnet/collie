@@ -132,6 +132,7 @@ describe("the route table read off server.ts", () => {
     for (const known of [
       "/api/snapshot",
       "/api/devices/revoke",
+      "/api/machine-profiles",
       "/api/pane/id1/reply",
       "/api/pane/id1/subagent/id1",
       "/api/workspace/id1/changes",

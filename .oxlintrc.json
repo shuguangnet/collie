@@ -152,6 +152,9 @@
         "**/bridge/password.ts",
         "**/bridge/open-guide.ts",
         "**/bridge/owner-file.ts",
+        // Saved machine profile JSON and its HTTP request body are explicit untrusted boundaries.
+        "**/bridge/machine-profiles.ts",
+        "**/bridge/machine-profiles-http.ts",
         "**/bridge/stt/json.ts",
         "**/bridge/push.ts",
         "**/bridge/notify-prefs.ts",

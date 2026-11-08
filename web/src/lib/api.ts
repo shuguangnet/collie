@@ -75,6 +75,8 @@ import type {
   MachineAlerts,
   MachineHistoryResponse,
   MachinesResponse,
+  MachineProfileInput,
+  MachineProfilesDocument,
   PaneReadResponse,
   PairFailure,
   PinFull,
@@ -2701,6 +2703,16 @@ export function fetchDevices(signal?: AbortSignal): Promise<DevicesResponse> {
  * failure — so this throws for that case exactly as it does for any other refusal, and the branch
  * lives at the one call site that knows what a 404 means here (lib/loaders.ts `crewLoader`).
  */
+export function fetchMachineProfiles(signal?: AbortSignal): Promise<MachineProfilesDocument> {
+  return req<MachineProfilesDocument>("/api/machine-profiles", { signal });
+}
+export function saveMachineProfile(input: MachineProfileInput): Promise<MachineProfilesDocument> {
+  return req<MachineProfilesDocument>("/api/machine-profiles", { method: "POST", body: JSON.stringify(input) });
+}
+export function deleteMachineProfile(id: string): Promise<MachineProfilesDocument> {
+  return req<MachineProfilesDocument>("/api/machine-profiles", { method: "DELETE", body: JSON.stringify({ id }) });
+}
+
 export function fetchCrew(signal?: AbortSignal): Promise<CrewStatusResponse> {
   return req<CrewStatusResponse>("/api/crew", { signal });
 }

@@ -5,6 +5,9 @@ import { useLoaderData } from "react-router";
 import { RouteHeader } from "@/components/app-header";
 import { MachineCard } from "@/components/machine-card";
 import { MachinesEmptyCard } from "@/components/machines-empty-card";
+import { MachineProfiles } from "@/components/machine-profiles";
+import { useOptionalRootData } from "@/lib/route-data";
+import { isReadOnly } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { useLocale } from "@/hooks/use-locale";
 import { useNav } from "@/hooks/use-nav";
@@ -39,6 +42,7 @@ export function MachinesRoute() {
   // data-mode `useLoaderData()` is typed `unknown` and cannot be narrowed any other way.
   const data = (useLoaderData() as MachinesData | undefined) ?? EMPTY_MACHINES;
   const census = data.census;
+  const root = useOptionalRootData();
   // The wire already puts the lead first; this keeps it so if a bridge ever stops doing that.
   const machines = census === null ? [] : census.machines.toSorted((a, b) => Number(b.isLead) - Number(a.isLead));
   const open = useCallback((row: MachineRow) => nav.down(machinePath(row.id, scope)), [nav, scope]);
@@ -68,6 +72,7 @@ export function MachinesRoute() {
       />
 
       <BandMain base={16} className="relative flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+        {data.profiles !== undefined && <MachineProfiles document={data.profiles} failed={data.profilesError ?? false} readOnly={isReadOnly(root?.device)} />}
         {census === null ? (
           <MachinesEmptyCard reason={data.error ? "error" : "unavailable"} />
         ) : (

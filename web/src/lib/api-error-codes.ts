@@ -147,6 +147,10 @@ export const API_ERROR_CODES = [
   // Password login and `collie open` — POST /api/auth/* (ADR 0133)
   "auth.bad_request",
   "auth.bad_label",
+  "profiles.invalid",
+  "profiles.conflict",
+  "profiles.unavailable",
+  "profiles.not_found",
   "auth.password_not_configured",
   "auth.password_incorrect",
   "auth.password_unavailable",

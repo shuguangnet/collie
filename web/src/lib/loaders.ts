@@ -18,6 +18,7 @@ import {
   fetchHistory,
   fetchCrew,
   fetchMachines,
+  fetchMachineProfiles,
   fetchPane,
   fetchPaneWalky,
   fetchPanePins,
@@ -63,6 +64,7 @@ import type {
   DeviceAuth,
   CrewStatusResponse,
   MachinesResponse,
+  MachineProfilesDocument,
   PairedDeviceWire,
   PaneHistoryResponse,
   PaneReadResponse,
@@ -1016,6 +1018,9 @@ export async function crewLoader({ request }: { request?: Request } = {}): Promi
 // and then once a minute while visible (routes/machine.tsx).
 
 export interface MachinesData {
+  /** Only the list route asks for saved setup parameters; never stored in browser persistence. */
+  profiles?: MachineProfilesDocument | null;
+  profilesError?: boolean;
   /** The census, or `null` when this collie serves none (404) or the fetch failed. */
   census: MachinesResponse | null;
   /** True only for a fetch that FAILED. A 404 is an answer, not an error. */
@@ -1045,7 +1050,14 @@ export async function machinesLoader({ request }: { request?: Request } = {}): P
 
 /** The Machines list: the census with each card's last half hour of CPU and memory. */
 export async function machinesListLoader({ request }: { request?: Request } = {}): Promise<MachinesData> {
-  return machinesRead(request?.signal, MACHINE_SPARK_MINUTES);
+  const data = await machinesRead(request?.signal, MACHINE_SPARK_MINUTES);
+  try {
+    const profiles = await fetchMachineProfiles(request?.signal);
+    return { ...data, profiles, profilesError: false };
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return { ...data, profiles: null, profilesError: !isApiErrorStatus(error, 404) };
+  }
 }
 
 async function machinesRead(signal: AbortSignal | undefined, spark: number | undefined): Promise<MachinesData> {

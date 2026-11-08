@@ -232,6 +232,14 @@ export const ACK_MANIFEST = {
     channel: "echo",
     why: "The switch flips optimistically under the thumb; the server's merged view then reconciles it, and a REVERT is paired with an error status because a switch that moves back in silence misinforms anyone who has stopped looking (hooks/use-notify-prefs.ts).",
   },
+  saveMachineProfile: {
+    channel: "inline",
+    why: "The machine form keeps Saving and failures beside the fields; a successful save closes the form and revalidates the server-owned list, which shows the new profile and its terminal command.",
+  },
+  deleteMachineProfile: {
+    channel: "echo",
+    why: "After the explicit second confirmation, the server acknowledges deletion and revalidation removes that profile from the list; failures leave the row visible with an inline error.",
+  },
   setMachineAlerts: {
     channel: "inline",
     why: "The alert card shows Saving, Saved or Could not save in its own header and keeps the last stored rules on screen after a failure, because a rule that did not land has to stay visible next to the control that tried to set it (components/machine-alerts-control.tsx).",

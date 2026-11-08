@@ -881,6 +881,8 @@ describe("solo zero-tax — routes", () => {
       "/api/launchers/added/remove",
       "/api/launchers/added/rename",
       // Machines (ADR 0084): the list with each machine's latest sample. A read, gated as one.
+      // Saved SSH setup parameters (ADR 0134), never an outbound installer route.
+      "/api/machine-profiles",
       "/api/machines",
       // The math pack (ADR 0132): a SOLO route that legitimately extends this list, named here rather
       // than exempted. Lead-local like the Whistle route, gated like it, and not forwardable. A bridge
@@ -1296,6 +1298,8 @@ const STATE_DIR_ENTRIES = [
   // and a bridge only started and stopped does not. Both are driven in "the machine files appear …".
   "machine-alerts.json",
   "machine-history.json",
+  // Created only by an explicit saved connection, never by a solo bridge's normal startup.
+  "machine-profiles.json",
   // The math pack (ADR 0132): `<stateDir>/math/<version>/`, the engines a tap in Settings fetched.
   // Written by that tap and by nothing else: absent on every bridge whose operator never taps it.
   "math",

@@ -101,6 +101,17 @@ function CrewTabFrame({ state }: { state: MachineCensusState | typeof CREW_TAB_L
 export function MachinesSection() {
   return (
     <Section def={DEF}>
+      <Group title="Saved connections">
+        <Card state="machines-profiles-empty" label="1.1 Empty connections">
+          <PhoneFrameCard height={760}><MachinesRouter home={homeSolo} machines={{ ...solo, profiles: { version: 1, profiles: [], muxes: ["fixture-adapter"] } }} start="/machines" /></PhoneFrameCard>
+        </Card>
+        <Card state="machines-profiles-saved" label="1.2 Saved connection">
+          <PhoneFrameCard height={760}><MachinesRouter home={homeSolo} machines={{ ...solo, profiles: { version: 1, muxes: ["fixture-adapter"], profiles: [{ id: "a".repeat(24), name: "Work server", sshHost: "pat@work", port: 8787, mux: "fixture-adapter", leadAddress: "", peerAddress: "", remotePath: "", instance: "", createdAt: 1 }] } }} start="/machines" /></PhoneFrameCard>
+        </Card>
+        <Card state="machines-profiles-unavailable" label="1.3 Connections unavailable">
+          <PhoneFrameCard height={760}><MachinesRouter home={homeSolo} machines={{ ...solo, profiles: null, profilesError: true }} start="/machines" /></PhoneFrameCard>
+        </Card>
+      </Group>
       <Group title="The list">
         <Card
           state="machines-list-crew"

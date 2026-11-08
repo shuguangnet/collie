@@ -29,6 +29,8 @@ Running a crew? Update the lead first; members follow on their own. Details:
 - **`collie open` signs the host's own browser in without a code.** The command mints a two-minute, single-use guide for the current user, opens only `http://127.0.0.1:<port>#collie-open=…` with the guide in the fragment, and never prints the URL. The page removes the fragment before the router or any loader starts and exchanges it once for an ordinary device token, so a used or expired guide fails closed and asks for `collie open` again. It is desktop-only and does nothing for a phone.
 - **Fixed machines can verify their persistent runtime before reporting success.** `collie crew add --persistent` checks the pinned Crew link, the member's actual supervisor and instance, Linux linger or macOS login requirements, and mux availability. `doctor --only persistence --json` and `status --json` share the verdict; the machine page explains recovery without changing device pairing.
 
+- **Saved machine connections follow you across signed-in browsers.** The Machines page saves bounded SSH setup profiles on the Collie server, not in browser storage. Run its id-only `collie crew add --saved <id>` command on the host to use the existing SSH installer and persistence checks; saving alone makes no outbound request and does not claim the machine is connected. Crew remains the authority for joined identities and automatic reconnect, and deleting a profile does not remove a member. SSH passwords and keys are never collected by the form.
+
 ### Fixed
 
 - **The math engine files carry no content hash.** The release check refused the Edge build because its one math pack named engine files by a hash that differed on every platform build, so the engines now keep fixed names under `math/`.

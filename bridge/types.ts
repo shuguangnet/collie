@@ -32,6 +32,29 @@ export type { PaneJob } from "./jobs-journal.ts";
 
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown";
 
+/** Server-side SSH setup parameters; not a trusted or connected Crew member. */
+export interface MachineProfileInput {
+  name: string;
+  sshHost: string;
+  port: number;
+  mux: string;
+  leadAddress: string;
+  peerAddress: string;
+  remotePath: string;
+  instance: string;
+}
+export interface MachineProfile extends MachineProfileInput {
+  id: string;
+  createdAt: number;
+}
+export interface MachineProfilesDocument {
+  version: 1;
+  profiles: MachineProfile[];
+  /** Adapter names advertised by the server, never a frontend registry. */
+  muxes?: string[];
+}
+
+
 /** A small mark next to a pane's title: a count, or a short word. Exactly one key (WIRE.md section 3). */
 export type PaneBadge = { count: number } | { text: string };
 

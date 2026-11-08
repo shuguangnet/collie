@@ -53,6 +53,7 @@ import {
   type RemoteResult,
 } from "./remote.ts";
 import { INSTALLER_SH } from "./installer-embed.ts";
+import { fileMachineProfilesIo, MachineProfilesStore } from "../bridge/machine-profiles.ts";
 import type { MuxProbeReport } from "./mux-probe.ts";
 import { realExec } from "./sys.ts";
 import { hostFor } from "../bridge/host.ts";
@@ -63,6 +64,35 @@ import { hostFor } from "../bridge/host.ts";
 // `cli/fakes.ts` draws for the lifecycle verbs and `cli/crew.test.ts` draws for the crew verbs — a
 // verb that installs software on another machine is exactly the one that must never be run for real
 // by a test suite.
+
+describe("crew add --saved", () => {
+  test("reads the server profile and drives the existing SSH path and persistent check", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "saved-machine-"));
+    try {
+      const saved = await new MachineProfilesStore(fileMachineProfilesIo(stateDir)).save({ name: "NAS", sshHost: "nas", port: 8787, mux: "herdr", leadAddress: "", peerAddress: "", remotePath: "", instance: "" });
+      const h = harness(); const deps = { ...h.deps, ctx: { ...h.deps.ctx, stateDir } };
+      expect(await cmdCrewAdd(deps, ["--saved", saved.profiles[0]!.id])).toBe(EXIT.OK);
+      expect(h.calls.length).toBeGreaterThan(0);
+      expect(h.calls.every((call) => call.host === "nas")).toBe(true);
+      expect(h.calls.some((call) => call.leg === "persistence")).toBe(true);
+      expect((await new MachineProfilesStore(fileMachineProfilesIo(stateDir)).read()).profiles).toHaveLength(1);
+    } finally { rmSync(stateDir, { recursive: true, force: true }); }
+  });
+  test("unknown, damaged, invalid id and argument overrides never reach SSH or candidate selection", async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "saved-machine-"));
+    try {
+      const h = harness({ sshConfig: "Host accidental", prompt: "1" });
+      const deps = { ...h.deps, ctx: { ...h.deps.ctx, stateDir } };
+      for (const args of [["--saved"], ["--saved=" + "f".repeat(24)], ["--saved=anything", "another-host"], ["--saved", "--bad"], ["--saved", "f".repeat(24), "another-host"], ["--saved", "f".repeat(24), "--mux", "tmux"]]) {
+        expect(await cmdCrewAdd(deps, args)).toBe(EXIT.USAGE);
+      }
+      expect(await cmdCrewAdd(deps, ["--saved", "f".repeat(24)])).toBe(EXIT.STATE);
+      writeFileSync(join(stateDir, "machine-profiles.json"), "broken", { mode: 0o600 });
+      expect(await cmdCrewAdd(deps, ["--saved", "f".repeat(24)])).toBe(EXIT.FAIL);
+      expect(h.calls).toHaveLength(0);
+    } finally { rmSync(stateDir, { recursive: true, force: true }); }
+  });
+});
 
 // ── The fake transport ───────────────────────────────────────────────────────
 

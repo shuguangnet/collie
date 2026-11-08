@@ -280,6 +280,10 @@ export const ERROR_CODES = {
   // whether one was ever set.
   "auth.bad_request": "bad-request",
   "auth.bad_label": "bad-label",
+  "profiles.invalid": "Invalid machine connection parameters.",
+  "profiles.conflict": "The profile name is taken or the profile limit was reached.",
+  "profiles.unavailable": "Server machine profiles are unavailable.",
+  "profiles.not_found": "The saved machine profile was not found.",
   "auth.password_not_configured": "password-not-configured",
   "auth.password_incorrect": "password-incorrect",
   "auth.password_unavailable": "password-unavailable",

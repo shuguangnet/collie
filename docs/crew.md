@@ -34,6 +34,35 @@ instructions, see
 [`docs/deployment.md` → the standby door](deployment.md#the-standby-door--a-crews-failover-path) and
 [the bad day](deployment.md#the-bad-day--the-runbook).
 
+## Save a machine connection on the server
+
+The Machines page shares saved SSH setup parameters between browsers signed in to this Collie.
+
+```bash
+collie crew add --saved <profile-id>
+```
+
+Open **Settings → Machines → Add machine connection**, enter a name and an SSH destination such as
+`pat@work-server` or an SSH config alias, and choose **Save on server**. Copy the generated command
+and run it on the host that runs this Collie. It uses the existing SSH installer, its confirmations,
+and the persistent-runtime check; it does not silently accept SSH host keys or take over another crew.
+
+Profiles live in `<stateDir>/machine-profiles.json`, with owner-only atomic writes. They survive a
+Collie restart and appear in another authenticated browser without migration. The form never saves
+an SSH password, private key or browser token. SSH uses the host's existing keys, agent and
+`~/.ssh/config`. The current SSH installer is non-interactive for authentication (`BatchMode=yes`);
+configure key-based SSH first if the remote machine accepts only passwords.
+
+Saving is not a connection test and installs nothing. Joined machines appear separately, backed by
+`crew-trust.json` and `crew-ops.json`; Crew keeps their pinned identity and reconnects after an outage.
+Deleting a saved profile does not remove a Crew member or stop any service. To change a profile,
+remove the draft and save its replacement; membership remains separate.
+
+The remote machine must be able to reach the lead's HTTPS front door, and the lead must reach the
+peer. `127.0.0.1:8787` means the machine making that request, not this computer from another host.
+Complete Tailscale login and publishing, or configure your own conforming HTTPS front door, before
+first-time enrollment. The optional HTTPS lead address field can name that front door explicitly.
+
 ## Two machines, one crew
 
 Two commands add a machine, one for Herdr and one for Collie, and a manual path is there for a host

@@ -7,6 +7,7 @@ import type { HostProbe } from "../bridge/mux/host-candidates.ts";
 import { HOST, type Host } from "../bridge/host.ts";
 import { buildMuxRegistry, muxNames } from "../bridge/mux/registry.ts";
 import { commitCrewChange, mintInvite } from "../bridge/crew/enrollment.ts";
+import { fileMachineProfilesIo, MachineProfilesStore, machineProfileArgs, PROFILE_ID } from "../bridge/machine-profiles.ts";
 import { slugifyMemberId } from "../bridge/crew/identity.ts";
 import type { OpsRecord } from "../bridge/crew/ops-store.ts";
 import { TrustStore, type TrustedMember, type TrustStoreData } from "../bridge/crew/trust-store.ts";
@@ -1116,6 +1117,7 @@ const USAGE = [
   "                      [--peer-address <bare-host>] [--address <lead-address>]",
   "                      [--label <name>] [--name <crew>] [--instance <name>]",
   "                      [--mux <name>] [--persistent]",
+  "       collie crew add --saved <profile-id>",
 ];
 
 /** Prompt copy shared by the abort path, so the non-interactive message names the real question. */
@@ -1140,6 +1142,24 @@ async function ask(deps: Wired, question: string): Promise<boolean | "aborted"> 
 export async function cmdCrewAdd(deps: CrewAddDeps, args: readonly string[]): Promise<number> {
   // Before the rich surface mounts, so the refusal is one plain line on the run's own stderr.
   if (refuseCrewOnWindows(deps)) return EXIT.FAIL;
+  const saved = args.findIndex((arg) => arg === "--saved" || arg.startsWith("--saved="));
+  if (saved !== -1) {
+    const id = args[saved + 1];
+    if (args.length !== 2 || saved !== 0 || args[0] !== "--saved" || id === undefined || !PROFILE_ID.test(id)) {
+      deps.io.err("usage: collie crew add --saved <profile-id> (no additional flags or host)");
+      return EXIT.USAGE;
+    }
+    let doc;
+    try {
+      doc = await new MachineProfilesStore(fileMachineProfilesIo(deps.ctx.stateDir)).read();
+    } catch {
+      deps.io.err("error: saved machine profiles are unavailable; no SSH connection was attempted");
+      return EXIT.FAIL;
+    }
+    const profile = doc.profiles.find((p) => p.id === id);
+    if (!profile) { deps.io.err("error: no saved machine profile with that id on this instance"); return EXIT.STATE; }
+    return await cmdCrewAdd(deps, machineProfileArgs(profile));
+  }
   const surface = deps.ui?.crewAdd?.() ?? null;
   if (surface === null) {
     // The plain path is unchanged in every byte: the events are replayed as the lines they always
