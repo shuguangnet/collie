@@ -1988,8 +1988,8 @@ describe("pairedLabel — the name Settings credits a change to", () => {
 // `/api/health` and `/api/pair`. The crew surface (`/crew/v1/*`) and the standby door have their own
 // admission and never reach `guard`. `bun test` cannot stand up `Bun.serve` (CLAUDE.md), so the
 // route table is read from the source, the way `solo-baseline.test.ts` pins it: every block that
-// claims an `/api` path must ask a gate before it answers, except the two named here.
-describe("open routes — every /api route but health and pair asks the pairing gate", () => {
+// claims an `/api` path must ask a gate before it answers, except the bootstrap routes named here.
+describe("open routes — ordinary /api routes ask the pairing gate", () => {
   const src = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
   const SITE =
     /^(\s*)(?:if \(|const \w+Match = )pathname(?: === ("\/api\/[^"]+"|MUX_LOGO_PATH)|\.startsWith\((OPERATOR_FONTS_PATH|"\/api\/")\)|\.match\((\w+_ROUTE)\))/;
@@ -2011,13 +2011,34 @@ describe("open routes — every /api route but health and pair asks the pairing 
     return out;
   }
 
-  test("open routes: only /api/health and /api/pair answer without asking a gate", () => {
+  test("open routes: only health and explicit enrolment bootstraps omit the pairing gate", () => {
     const blocks = routeBlocks();
     // The scan found the table, not a handful of lines: the pane family, the blobs, the snapshot.
     expect(blocks.length).toBeGreaterThan(30);
     expect(blocks.map((b) => b.route)).toContain("BLOB_ROUTE");
     expect(blocks.map((b) => b.route)).toContain('"/api/snapshot"');
-    expect(blocks.filter((b) => !b.gated).map((b) => b.route).toSorted()).toEqual(['"/api/health"', '"/api/pair"']);
+    expect(blocks.filter((b) => !b.gated).map((b) => b.route).toSorted()).toEqual([
+      '"/api/auth/login"', '"/api/auth/open"', '"/api/auth/status"', '"/api/health"', '"/api/pair"',
+    ]);
+  });
+
+  test("open routes: auth bootstraps keep their transport/front-door checks and no-store responses", () => {
+    for (const route of ["status", "login", "open"]) {
+      const at = src.indexOf(`if (pathname === "/api/auth/${route}"`);
+      expect(at).toBeGreaterThan(0);
+      const handler = src.slice(at, src.indexOf("\n      }\n", at));
+      expect(handler).toContain("noStore(");
+      if (route === "open") {
+        expect(handler).toContain('authTransport(authFactsOf(), { requireOrigin: true }) !== "loopback"');
+        expect(handler).toContain('checkAccess(req, cfg, "write")');
+      } else {
+        expect(handler).toContain(route === "status" ? 'authDenied("read", false)' : 'authDenied("write", true)');
+      }
+      if (route !== "status") {
+        expect(handler).toContain("authLimited()");
+        expect(handler).toContain("readAuthBody()");
+      }
+    }
   });
 
   test("open routes: the snapshot asks guard, not a bare checkAccess", () => {

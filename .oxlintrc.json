@@ -145,6 +145,13 @@
       "files": [
         "**/bridge/server.ts",
         "**/bridge/pairing.ts",
+        // ADR 0133's three readers of untrusted material: `auth.ts` parses the two POST bodies and the
+        // request facts, `password.ts` and `open-guide.ts` parse their on-disk JSON, and `owner-file.ts`
+        // is the shared 0600/symlink/owner check in front of both. Every `typeof` sits in those readers.
+        "**/bridge/auth.ts",
+        "**/bridge/password.ts",
+        "**/bridge/open-guide.ts",
+        "**/bridge/owner-file.ts",
         "**/bridge/stt/json.ts",
         "**/bridge/push.ts",
         "**/bridge/notify-prefs.ts",

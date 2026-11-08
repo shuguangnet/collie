@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { CREW_SUBCOMMANDS } from "./crew.ts";
 import { DEVICES_SUBCOMMANDS } from "./pairing.ts";
+import { PASSWORD_SUBCOMMANDS } from "./password.ts";
 import { PUSH_SUBCOMMANDS } from "./push.ts";
 import { STT_SUBCOMMANDS } from "./stt.ts";
 import { CONFIG_SUBCOMMANDS } from "./config.ts";
@@ -85,6 +86,11 @@ const BEACON_VERBS = ["hooks", "beacon"];
 // they sit in the table, and grouped separately for the same reason as the two above.
 const PAIRING_VERBS = ["pair", "devices"];
 
+// The shared access password and the host's own one-time open (ADR 0133). Declared right after
+// `devices`: the same subject (who may hold a token) and the same rule (only the operator's own
+// terminal mints or clears a credential).
+const ACCESS_VERBS = ["password", "open"];
+
 // The push-subscription verb (#104). `push-test` sits in SHELL_VERBS above — it is the shell's, and
 // keeps its spelling — while `push` is the tree that grew around it, declared next to `devices`
 // because it answers the same question about a different register.
@@ -122,6 +128,7 @@ describe("the verb table", () => {
       ...LINK_VERBS,
       ...BEACON_VERBS,
       ...PAIRING_VERBS,
+      ...ACCESS_VERBS,
       ...PUSH_VERBS,
       ...STT_VERBS,
       ...CONFIG_VERBS,
@@ -411,6 +418,11 @@ describe("the subcommand trees", () => {
     expect(devices?.subcommands?.map((s) => s.name)).toEqual([...DEVICES_SUBCOMMANDS]);
   });
 
+  test("`password` declares exactly `cli/password.ts`'s sub-verbs, in its order", () => {
+    const password = findCommand("password");
+    expect(password?.subcommands?.map((s) => s.name)).toEqual([...PASSWORD_SUBCOMMANDS]);
+  });
+
   test("`push` declares exactly `cli/push.ts`'s sub-verbs, in its order", () => {
     expect(findCommand("push")?.subcommands?.map((s) => s.name)).toEqual([...PUSH_SUBCOMMANDS]);
   });
@@ -443,6 +455,7 @@ describe("the subcommand trees", () => {
       "hooks",
       "beacon",
       "devices",
+      "password",
       "push",
       "stt",
       "config",
@@ -558,6 +571,9 @@ describe("exit codes", () => {
       // `pair` writes a pending pairing into the developer's own state dir, and `devices` resolves
       // that same real dir before it decides anything. cli/pairing.test.ts drives both against fakes.
       ...PAIRING_VERBS,
+      // `password set` would mint a verifier in the developer's own state dir, and `open` would open
+      // a real browser on this host. cli/password.test.ts and cli/open.test.ts drive both against fakes.
+      ...ACCESS_VERBS,
       // Every `push` sub-verb resolves the real state dir, and `push test` would send to this host's
       // own subscribed phones. cli/push.test.ts drives all three against a throwaway dir.
       ...PUSH_VERBS,

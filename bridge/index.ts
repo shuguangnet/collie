@@ -93,6 +93,8 @@ import { RecentRunStore, recentRunFileIo } from "./recent-runs.ts";
 import { SentStore, sentFileIo, sentRecorder } from "./sent.ts";
 import { WorktreeChoiceStore } from "./worktree-choices.ts";
 import { filePairingIo, type PairedRegistry, PairingStore } from "./pairing.ts";
+import { filePasswordIo, PasswordStore } from "./password.ts";
+import { fileOpenGuideIo, OpenGuideStore } from "./open-guide.ts";
 import {
   LOCAL_SECRET_FILENAME,
   type LocalCredential,
@@ -771,6 +773,12 @@ await notifyPrefs.load();
 // needs. Pairing is always on (ADR 0086): an empty registry answers only `/api/health` and
 // `/api/pair`, and `collie pair` on this host is how the first device gets in.
 const pairing = new PairingStore(filePairingIo(cfg.stateDir));
+
+// The fixed access password and the `collie open` guide (bridge/password.ts, bridge/open-guide.ts,
+// ADR 0133). Both read their file per request, so the CLI's `password set` and `open` land on the
+// running service. Neither holds a secret in memory beyond the request that used it.
+const password = new PasswordStore(filePasswordIo(cfg.stateDir));
+const openGuides = new OpenGuideStore(fileOpenGuideIo(cfg.stateDir));
 
 /**
  * The registry for a caller that reports rather than gates, or null while the file is there and
@@ -3200,6 +3208,8 @@ const server = listenOrExit("front door", cfg.host, cfg.port, () => startServer(
   machines: machineWatch,
   crew,
   pairing,
+  password,
+  openGuides,
   launcherCopy: launcherCopySeam,
   localCredential,
   stt,

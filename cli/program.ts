@@ -80,6 +80,8 @@ import {
   DEVICES_SUBCOMMANDS,
   type PairingDeps,
 } from "./pairing.ts";
+import { cmdOpen, openDeps } from "./open.ts";
+import { cmdPassword, PASSWORD_SUBCOMMANDS, passwordDeps } from "./password.ts";
 import {
   cmdPush,
   cmdPushForget,
@@ -840,6 +842,41 @@ export const COMMANDS: readonly Command[] = [
     ],
     // Bare or misspelt lands here, and `cmdDevices` owns that message — as `cmdCrew` does.
     run: (args, s) => cmdDevices(pairingDeps(s.io), args),
+  },
+  // ── The shared access password (ADR 0133) ─────────────────────────────────
+  // The password is set ONLY here, in the operator's own terminal: never through argv, never through
+  // the anonymous web form. The bridge reads the verifier per login, so a set/clear lands on the
+  // running service without a restart, and neither verb touches a device token.
+  {
+    name: "password",
+    summary: `the shared web sign-in password (${PASSWORD_SUBCOMMANDS.join(", ")}); set/clear affect password sign-in only, not paired devices`,
+    subcommands: [
+      {
+        name: "set",
+        summary: "set the access password (hidden prompt, or `--stdin`); `--force` replaces a damaged verifier",
+        run: (args, s) => cmdPassword(passwordDeps(s.io), ["set", ...args]),
+      },
+      {
+        name: "status",
+        summary: "whether a password is configured (reads only; never prints the verifier)",
+        run: (_args, s) => cmdPassword(passwordDeps(s.io), ["status"]),
+      },
+      {
+        name: "clear",
+        summary: "turn password sign-in off; devices already signed in keep their tokens",
+        run: (_args, s) => cmdPassword(passwordDeps(s.io), ["clear"]),
+      },
+    ],
+    // Bare or misspelt lands here, and `cmdPassword` owns that message.
+    run: (args, s) => cmdPassword(passwordDeps(s.io), args),
+  },
+  // ── The host's own browser, one command (ADR 0133) ────────────────────────
+  // A short-lived guide mints an ordinary device token through the strict loopback front. It takes no
+  // URL: the loopback address and the mount come from this install's own context.
+  {
+    name: "open",
+    summary: "open this machine's Collie in its own browser with a two-minute one-time link",
+    run: (args, s) => cmdOpen(openDeps(loadContext(s.io.err), s.io), args),
   },
   // ── Push subscriptions ─────────────────────────────────────────────────────
   // Next to `devices` because it answers the same shape of question — who is registered with this

@@ -202,9 +202,21 @@ import {
   normalizeLabel,
   toDeviceWire,
   type ClaimFailure,
+  type EnrolFailure,
   type PairedDeviceWire,
   type PairingStore,
 } from "./pairing.ts";
+import {
+  AUTH_BODY_MAX_BYTES,
+  authTransport,
+  nextOpenLabel,
+  parseLoginRequest,
+  parseOpenRequest,
+  type AuthRequestFacts,
+  type AuthStatusBody,
+} from "./auth.ts";
+import { createKdfLimiter, KdfQueueFullError, type KdfLimiter, type PasswordStore } from "./password.ts";
+import type { OpenExchangeResult, OpenGuideStore } from "./open-guide.ts";
 import { createPairLimiter, pairSourceKey } from "./pair-limit.ts";
 import { LOCAL_LABEL, type LocalCredential } from "./local-secret.ts";
 import { modeForWire } from "./crew/mode.ts";
@@ -1282,6 +1294,23 @@ export function startServer(opts: {
    */
   localCredential?: LocalCredential;
   /**
+   * The fixed access password's verifier store (bridge/password.ts, ADR 0133). Supplied by index.ts;
+   * absent in a test that does not exercise `/api/auth/*`, where login answers `not configured` and
+   * the status read says `configured: false`. The store re-reads `<stateDir>/access-password.json` on
+   * every call, so `collie password set` lands without a restart.
+   */
+  password?: PasswordStore;
+  /**
+   * The `collie open` guide store (bridge/open-guide.ts, ADR 0133). Absent ⇒ the open exchange answers
+   * 503, which is the honest state for a server that cannot mint or claim guides.
+   */
+  openGuides?: OpenGuideStore;
+  /**
+   * The process-wide scrypt bound, shared by every login. Optional so index.ts can construct one and
+   * a test can pass a small one; absent means `createKdfLimiter()` with the production defaults.
+   */
+  kdfLimiter?: KdfLimiter;
+  /**
    * Speech-to-text, asked for per request rather than resolved once.
    *
    * A FUNCTION, not a provider, because the settings behind it are re-read behind an mtime check
@@ -1492,6 +1521,8 @@ export function startServer(opts: {
   const walky = opts.walky;
   const pairing = opts.pairing;
   const localCredential = opts.localCredential;
+  const passwordStore = opts.password;
+  const openGuideStore = opts.openGuides;
   /**
    * What every gate on the browser surface asks: the pairing store, plus the host's local read
    * credential from a peer on this host. The peer is the kernel's (`server.requestIP`), never a header.
@@ -2721,6 +2752,9 @@ export function startServer(opts: {
 
   // Ten attempts per source address per minute on POST /api/pair, in memory (bridge/pair-limit.ts).
   const pairLimiter = createPairLimiter();
+  // `POST /api/auth/login` and `/api/auth/open` share that limiter's source rule (ADR 0133), and a
+  // login additionally holds one of these scrypt slots for the length of its KDF.
+  const kdfLimiter = opts.kdfLimiter ?? createKdfLimiter();
 
   const server = Bun.serve({
     hostname: cfg.host,
@@ -4075,6 +4109,237 @@ export function startServer(opts: {
         const { response, attempt } = await modelResponse(whistleDeps, sttModelMatch[1]!, req.signal);
         audit.record({ action: "stt.model.read", device: whois(req).device, detail: { ...attempt } });
         return secure(response);
+      }
+
+      // ── Password login and `collie open` (bridge/auth.ts, ADR 0133) ───────
+      //
+      // These three routes answer before a device credential exists, so they are in OPEN_API_ROUTES
+      // beside `/api/pair`. Being open to the front gate is NOT being ungoverned: each one runs
+      // `checkAccess` itself, requires the strict transport above, shares the per-source limiter, and
+      // hands back nothing until a password or a guide proves the caller may enrol.
+      const authFactsOf = (): AuthRequestFacts => {
+        const peer = server.requestIP(req)?.address;
+        const hostHeader = req.headers.get("host") ?? "";
+        return {
+          peerLoopback: isLoopbackPeer(peer),
+          hostLoopback: LOOPBACK_HOST.test(hostHeader),
+          tls: req.url.startsWith("https:"),
+          proxyMarker: carriesProxyMarker(req.headers),
+          forwardedProto: req.headers.get("x-forwarded-proto"),
+          host: hostHeader,
+          origin: req.headers.get("origin"),
+        };
+      };
+      const authError = (code: ErrorCode, status: number): Response =>
+        noStore(jsonError(apiError(code), status, req.headers.get("accept-encoding")));
+      /** The transport + `checkAccess` refusal shared by the three routes, or null to proceed. */
+      const authDenied = (level: "read" | "write", requireOrigin: boolean): Response | null => {
+        if (authTransport(authFactsOf(), { requireOrigin }) === null) {
+          return noStore(text("auth requires the front door", 403));
+        }
+        const gate = checkAccess(req, cfg, level);
+        return gate.ok ? null : noStore(text(gate.reason, 403));
+      };
+      /** The per-source brake `POST /api/pair` already uses, on the same source rule. */
+      const authLimited = (): Response | null => {
+        const peer = server.requestIP(req)?.address;
+        const source = pairSourceKey(peer, isLoopbackPeer(peer), req.headers.get("x-forwarded-for"));
+        const limited = pairLimiter.hit(source);
+        if (limited.allowed) return null;
+        if (limited.first) audit.record({ action: "auth-refused", detail: { reason: "rate-limited" } });
+        return noStore(
+          new Response("too many sign-in attempts, try again in a minute", {
+            status: 429,
+            headers: { "retry-after": "60" },
+          }),
+        );
+      };
+      /**
+       * Read at most {@link AUTH_BODY_MAX_BYTES} from the BODY STREAM. A declared length that is too
+       * large is refused before reading, but that is only a shortcut: a chunked or lying request is
+       * cut off as soon as the running total crosses the cap, and the rest of the stream is cancelled
+       * rather than drained.
+       */
+      const readAuthBody = async (): Promise<
+        { ok: true; value: JsonValue } | { ok: false; reason: "bad-body" | "too-large" }
+      > => {
+        const declared = Number(req.headers.get("content-length") ?? "");
+        if (Number.isFinite(declared) && declared > AUTH_BODY_MAX_BYTES) {
+          await req.body?.cancel().catch(() => undefined);
+          return { ok: false, reason: "too-large" };
+        }
+        if (req.body === null) return { ok: false, reason: "bad-body" };
+        const reader = req.body.getReader();
+        const chunks: Uint8Array[] = [];
+        let total = 0;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value === undefined) continue;
+            total += value.byteLength;
+            if (total > AUTH_BODY_MAX_BYTES) {
+              await reader.cancel().catch(() => undefined);
+              return { ok: false, reason: "too-large" };
+            }
+            chunks.push(value);
+          }
+        } catch {
+          await reader.cancel().catch(() => undefined);
+          return { ok: false, reason: "bad-body" };
+        }
+        const bodyText = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+        try {
+          // SAFETY: `JSON.parse` output IS a JsonValue by construction; the parsers re-check it.
+          return { ok: true, value: JSON.parse(bodyText) as JsonValue };
+        } catch {
+          return { ok: false, reason: "bad-body" };
+        }
+      };
+
+      // `GET /api/auth/status`: the one anonymous read, and it says only whether a password is
+      // configured. A missing Origin is allowed because browsers omit it on GET; a present one must
+      // still be same-origin, and the transport rule is the same front door the POSTs use.
+      if (pathname === "/api/auth/status" && req.method === "GET") {
+        const denied = authDenied("read", false);
+        if (denied) return denied;
+        let configured = false;
+        if (passwordStore !== undefined) {
+          const state = await passwordStore.state();
+          // A damaged or unreadable verifier is an OUTAGE, not "not configured": saying false here
+          // would send the operator to initialise a password over the file that needs repairing.
+          if (state.kind === "invalid") return authError("auth.password_unavailable", 503);
+          configured = state.kind === "ok";
+        }
+        return noStore(json({ configured } satisfies AuthStatusBody, req.headers.get("accept-encoding")));
+      }
+
+      // `POST /api/auth/login`: the fixed password proves a caller may enrol ONE device.
+      if (pathname === "/api/auth/login" && req.method === "POST") {
+        const denied = authDenied("write", true);
+        if (denied) return denied;
+        const limited = authLimited();
+        if (limited) return limited;
+        const body = await readAuthBody();
+        if (!body.ok) {
+          return body.reason === "too-large"
+            ? noStore(text("request body too large", 413))
+            : authError("auth.bad_request", 400);
+        }
+        const parsed = parseLoginRequest(body.value);
+        if (!parsed.ok) return authError(parsed.reason === "bad-label" ? "auth.bad_label" : "auth.bad_request", 400);
+        if (passwordStore === undefined) return authError("auth.password_not_configured", 403);
+        if (!pairing) return pairingUnavailable();
+        let verdict: Awaited<ReturnType<PasswordStore["verify"]>>;
+        try {
+          verdict = await kdfLimiter.run(() => passwordStore.verify(parsed.request.password));
+        } catch (err) {
+          if (err instanceof KdfQueueFullError) {
+            return noStore(new Response("password check busy, try again", { status: 503, headers: { "retry-after": "5" } }));
+          }
+          // The message could name a file, never a password; keep the payload out regardless.
+          console.warn(`[auth] password check failed: ${errorText(err)}`);
+          return authError("auth.password_unavailable", 503);
+        }
+        if (!verdict.ok) {
+          if (verdict.reason === "incorrect") return authError("auth.password_incorrect", 401);
+          if (verdict.reason === "not-configured") return authError("auth.password_not_configured", 403);
+          return authError("auth.password_unavailable", 503);
+        }
+        let enrolled: Awaited<ReturnType<PairingStore["enrol"]>>;
+        try {
+          enrolled = await pairing.enrol(parsed.request.label);
+        } catch (err) {
+          // A torn registry is not overwritten by this enrolment; the password stays usable and the
+          // person retries after the repair.
+          console.warn(`[auth] enrolment deferred: ${errorText(err)}`);
+          return pairingUnavailable();
+        }
+        if (!enrolled.ok) {
+          return enrolled.reason === "device-limit"
+            ? authError("auth.device_limit", 409)
+            : enrolled.reason === "label-unavailable"
+              ? authError("auth.label_unavailable", 409)
+              : authError("auth.duplicate_label", 409);
+        }
+        if (enrolled.replacedExpired) {
+          audit.record({
+            action: "device.revoke",
+            device: enrolled.label,
+            detail: { label: enrolled.label, reason: "expired-replaced" },
+          });
+          await forgetDevice(enrolled.label, "expired-replaced");
+        }
+        audit.record({ action: "auth.login", device: enrolled.label, detail: { label: enrolled.label } });
+        return noStore(
+          json({ token: enrolled.token, label: enrolled.label }, req.headers.get("accept-encoding")),
+        );
+      }
+
+      // `POST /api/auth/open`: a `collie open` guide, spent once, for the browser on this host.
+      // STRICTLY loopback: unlike login, this exchange is not offered through an HTTPS front door.
+      // `collie open` only ever opens `http://127.0.0.1`, and accepting a proxied request here would
+      // let a remote caller spend a guide this host minted for its own browser.
+      if (pathname === "/api/auth/open" && req.method === "POST") {
+        if (authTransport(authFactsOf(), { requireOrigin: true }) !== "loopback") {
+          return noStore(text("collie open is only available from this host", 403));
+        }
+        const gate = checkAccess(req, cfg, "write");
+        if (!gate.ok) return noStore(text(gate.reason, 403));
+        const limited = authLimited();
+        if (limited) return limited;
+        if (openGuideStore === undefined || !pairing) return pairingUnavailable();
+        const body = await readAuthBody();
+        if (!body.ok) {
+          return body.reason === "too-large"
+            ? noStore(text("request body too large", 413))
+            : authError("auth.bad_request", 400);
+        }
+        const parsed = parseOpenRequest(body.value);
+        if (parsed === null) return authError("auth.bad_request", 400);
+        let exchanged: OpenExchangeResult<
+          Extract<Awaited<ReturnType<PairingStore["enrolAuto"]>>, { ok: true }>,
+          EnrolFailure
+        >;
+        try {
+          exchanged = await openGuideStore.exchange(parsed.guide, async () => {
+            const enrolled = await pairing.enrolAuto((existing) => nextOpenLabel(existing));
+            return enrolled.ok ? { ok: true as const, value: enrolled } : { ok: false as const, reason: enrolled.reason };
+          });
+        } catch (err) {
+          // A failed read/removal happens BEFORE any device is written, but a failed removal may still
+          // leave the guide present; either way the answer is an unavailable service, never a token.
+          // The person may need `collie open` again if the guide was already consumed.
+          console.warn(`[auth] open exchange deferred: ${errorText(err)}`);
+          return pairingUnavailable();
+        }
+        if (!exchanged.ok) {
+          if (exchanged.source === "guide") {
+            return exchanged.reason === "expired"
+              ? authError("auth.open_expired", 400)
+              : exchanged.reason === "no-guide"
+                ? authError("auth.open_no_guide", 400)
+                : authError("auth.open_bad_token", 400);
+          }
+          return exchanged.reason === "label-unavailable"
+            ? authError("auth.label_unavailable", 409)
+            : exchanged.reason === "device-limit"
+              ? authError("auth.device_limit", 409)
+              : authError("auth.duplicate_label", 409);
+        }
+        const enrolled = exchanged.value;
+        if (enrolled.replacedExpired) {
+          audit.record({
+            action: "device.revoke",
+            device: enrolled.label,
+            detail: { label: enrolled.label, reason: "expired-replaced" },
+          });
+          await forgetDevice(enrolled.label, "expired-replaced");
+        }
+        audit.record({ action: "auth.open", device: enrolled.label, detail: { label: enrolled.label } });
+        return noStore(
+          json({ token: enrolled.token, label: enrolled.label }, req.headers.get("accept-encoding")),
+        );
       }
 
       // ── Device pairing (bridge/pairing.ts) ───────────────────────────────
@@ -8272,6 +8537,12 @@ interface DevicesResponseBody {
 export const OPEN_API_ROUTES: readonly { readonly path: string; readonly methods: readonly string[] }[] = [
   { path: "/api/health", methods: ["GET", "HEAD"] },
   { path: "/api/pair", methods: ["POST"] },
+  // The two new issuance channels (ADR 0133). Each handler does its own transport + `checkAccess`
+  // gate, exactly as `/api/pair` does; being listed here only means the pairing credential is not
+  // demanded before the route that exists to grant one.
+  { path: "/api/auth/status", methods: ["GET"] },
+  { path: "/api/auth/login", methods: ["POST"] },
+  { path: "/api/auth/open", methods: ["POST"] },
 ];
 
 /** Whether this method and path are one of {@link OPEN_API_ROUTES}. Exact path, exact method. */
@@ -8423,6 +8694,12 @@ export function deviceAuth(req: Request, cfg: Config): DeviceAuth {
 // all of which pass through here — so the headers are set exactly once, consistently.
 function secure(res: Response): Response {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.headers.set(k, v);
+  return res;
+}
+
+/** `no-store` on an answer that is a credential decision: none of it is worth a cache entry. */
+function noStore(res: Response): Response {
+  res.headers.set("cache-control", "no-store");
   return res;
 }
 

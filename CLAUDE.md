@@ -800,8 +800,11 @@ provider set up with a key or a command, or named by the environment, is never c
 **Two device gates guard writes, independently, and compose by AND.** `COLLIE_DEVICE_HEADER` trusts
 a name a proxy injects; **pairing** (`bridge/pairing.ts`, `collie pair` / `collie devices`) requires a
 bearer credential the device holds, and is always on, reads included
-([ADR 0086](./.adr/0086-reads-need-the-pairing-token.md)). Every `/api/*` route except `/api/health`
-and `/api/pair` needs a valid token, and an empty registry answers `403 device not paired`. The
+([ADR 0086](./.adr/0086-reads-need-the-pairing-token.md)). Ordinary `/api/*` routes need a valid
+token, and an empty registry answers `403 device not paired`. Exceptions are `/api/health` and the
+explicit enrolment routes `/api/pair`, `/api/auth/status`, `/api/auth/login`, `/api/auth/open`;
+the new auth routes keep their own transport/front-door checks and only issue ordinary device tokens
+([ADR 0133](./.adr/0133-a-shared-password-mints-a-device-token.md)). The
 header gate still covers writes only, with one exception: the Files view asks for both as a
 `device-read` ([ADR 0083](./.adr/0083-the-files-view-reads-the-changes-root.md)). Neither applies to `/crew/v1/*`, which has its own two factors. The reasoning sits in
 `bridge/pairing.ts`'s header; don't collapse the two gates into one.

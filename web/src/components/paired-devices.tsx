@@ -264,7 +264,7 @@ function DeviceRow({
   );
 }
 
-function PairForm({
+export function PairForm({
   nameRef,
   expired,
   heldToken,

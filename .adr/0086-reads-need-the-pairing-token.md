@@ -7,6 +7,9 @@
   as open to every device past the front door. The Files view's `device-read` level stands; the
   read-side fact does not. Also [ADR 0028](./0028-the-standby-door-is-a-second-listener.md), in its
   reasoning only: the deputy still keeps the lead's registry apart from its own, for a new reason.
+- **Amended in scope by:** [ADR 0133](./0133-a-shared-password-mints-a-device-token.md), which adds
+  two issuance channels (`POST /api/auth/login`, `POST /api/auth/open`). The read gate below is
+  unchanged: a password or a guide only mints an ordinary device token.
 - **Trail:** M46 specs 03 and 06 (2026-10-07) · `bridge/pairing.ts` (`PairingStore.enforced`) ·
   `bridge/server.ts` (`guard`, `PairingGate`, `requestDevice`, `/api/snapshot`, the `/api/*`
   catch-all, `WORKTREE_LIST_ROUTE`, `/api/pair`, `pairingRefusal`) · `bridge/crew/forward.ts`

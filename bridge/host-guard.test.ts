@@ -49,6 +49,8 @@ interface Allowed {
 
 /** Sites Windows never reaches: URLs and routes, tmux and zellij, systemd, test-only helpers. */
 const NOT_REACHED_BY_WINDOWS: readonly Allowed[] = [
+  { file: "cli/open.ts", pattern: "startsWithSlash", count: 1, why: "COLLIE_BASE_PATH is a URL mount, always slashes, never a filesystem path" },
+  { file: "cli/open.ts", pattern: "splitOnSlash", count: 1, why: "the same URL mount, split to reject dot segments" },
   { file: "bridge/mux/tmux/exec.ts", pattern: "startsWithSlash", count: 1, why: "tmux has no Windows build" },
   { file: "bridge/mux/zellij/exec.ts", pattern: "startsWithSlash", count: 1, why: "zellij has no Windows build" },
   { file: "bridge/mux/tmux/adapter.ts", pattern: "splitOnSlash", count: 1, why: "tmux session path, tmux has no Windows build" },

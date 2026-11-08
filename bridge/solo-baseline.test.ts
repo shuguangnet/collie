@@ -816,6 +816,10 @@ describe("solo zero-tax — routes", () => {
       // exempted. Write-gated through the same closure a send rides, this collie's own sessions only,
       // and a 404 when the Send Protocol is off (COLLIE_SEND_PROTOCOL=0, on by default since spec 06). No crew route.
       "/api/ask/*",
+      // Device bootstrap only (ADR 0133); ordinary reads and writes remain paired.
+      "/api/auth/login",
+      "/api/auth/open",
+      "/api/auth/status",
       // The prompt-cache rule catalog (M28/02). A process-scoped READ, gated exactly as `/api/config`
       // is, and the only route this feature adds. Not forwarded across the crew link.
       "/api/cache-rules",
@@ -1228,6 +1232,8 @@ describe("solo zero-tax — config", () => {
 
 /** Every `<stateDir>/…` path any bridge module names. `uploads` is a directory, the rest are files. */
 const STATE_DIR_ENTRIES = [
+  // Only `collie password set` writes a verifier (ADR 0133); absent on an untouched install.
+  "access-password.json",
   // Windows only (M43 spec 04): the access lists Collie saved before it changed one, so the change can
   // be undone with `icacls /restore`. Absent until the bridge actually repaired a loose folder or file;
   // never on Linux or macOS, and never on a Windows install whose folders were private already.
@@ -1294,6 +1300,8 @@ const STATE_DIR_ENTRIES = [
   // Written by that tap and by nothing else: absent on every bridge whose operator never taps it.
   "math",
   "notify-prefs.json",
+  // Only `collie open` writes this short-lived single-use guide (ADR 0133).
+  "open-pending.json",
   // Device pairing. Both are absent until the operator runs `collie pair`, and an install that
   // never does keeps writing exactly the six entries above it.
   "paired-devices.json",

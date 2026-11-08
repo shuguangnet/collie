@@ -49,6 +49,9 @@ export const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTWXYZ";
 /** At most one `lastSeenAt` write per device per this interval — a poll every 1.5s must not be a write. */
 export const SEEN_THROTTLE_MS = 60_000;
 
+/** The registry cap. A bootstrap channel must not grow the operator's device list without bound. */
+export const MAX_PAIRED_DEVICES = 64;
+
 /** A minted, not-yet-claimed pairing code. Only its hash is ever persisted. */
 export type PendingPairing = {
   /** SHA-256 (hex) of the normalised code. */
@@ -403,6 +406,17 @@ export function findByToken(registry: PairedRegistry, token: string | null): Pai
 /** What {@link addDevice} enrols: a label, the token's hash, the moment, and an optional expiry. */
 export type Enrolment = { label: string; tokenHash: string; now: number; expiresAt?: number };
 
+/** Why a code-less enrolment failed. `label-unavailable` is the exhausted automatic label space. */
+export type EnrolFailure = "duplicate-label" | "device-limit" | "label-unavailable";
+
+/**
+ * A code-less enrolment's answer. The token exists in the clear exactly once, here, exactly as
+ * `claim`'s does; the registry holds only its hash.
+ */
+export type EnrolResult =
+  | { ok: true; token: string; label: string; replacedExpired: boolean }
+  | { ok: false; reason: EnrolFailure };
+
 /**
  * Add a device, or null when the label is already taken (labels are the revoke handle). `expiresAt`
  * lands on the entry only when given.
@@ -681,6 +695,18 @@ export class PairingStore {
   }
 
   /**
+   * Read the registry for a read-modify-write. Missing is the empty registry; an object is coerced;
+   * anything else THROWS {@link RegistryUnreadableError}. Never `coerceRegistry` a bare value here:
+   * that would read a torn or hand-edited outer document as "no devices" and write one device over
+   * every row it held.
+   */
+  private async readRegistryForWrite(): Promise<PairedRegistry> {
+    const raw = await this.io.readRegistry();
+    if (raw === null) return { devices: [] };
+    return coerceRegistry(registryValue(raw));
+  }
+
+  /**
    * Resolves once every registry write this store has started has finished. The stamp in
    * {@link resolve} is deliberately fire-and-forget, so this is the only way to observe it landing.
    * Never awaited on the request path.
@@ -760,7 +786,7 @@ export class PairingStore {
           // The re-read and the throttle check are INSIDE the serialized section on purpose: a
           // second stamp from the same poll tick then reads the first one's timestamp and becomes a
           // no-op, instead of racing it to the same file.
-          const current = coerceRegistry(await this.io.readRegistry());
+          const current = await this.readRegistryForWrite();
           const fresh = touchDevice(current, device.label, this.now());
           if (fresh === null) return;
           await this.io.writeRegistry(fresh);
@@ -817,13 +843,57 @@ export class PairingStore {
       now,
     };
     if (lifetime !== undefined) enrolment.expiresAt = now + lifetime;
-    const enrolled = enrolDevice(coerceRegistry(await this.io.readRegistry()), enrolment);
+    const enrolled = enrolDevice(await this.readRegistryForWrite(), enrolment);
     // A duplicate label leaves the pending pairing alive: the operator retries with another name
     // rather than re-running `collie pair`.
     if (!enrolled) return { ok: false, reason: "duplicate-label" };
     await this.io.writeRegistry(enrolled.registry);
     await this.io.deletePending();
     return { ok: true, token, replacedExpired: enrolled.replaced };
+  }
+
+  /**
+   * Enrol a named device WITHOUT a pairing code: the `POST /api/auth/login` path (ADR 0133).
+   *
+   * The token, the registry write and the expiry semantics are exactly `claim`'s; the difference is
+   * only what proved the caller may enrol. A LIVE duplicate label is refused (`duplicate-label`) —
+   * somebody who merely knows the shared password must not be able to replace a working phone. An
+   * EXPIRED holder is replaced in the same write, with the same audit and launcher cleanup the code
+   * path performs. The registry is capped at {@link MAX_PAIRED_DEVICES}; an expired replacement does
+   * not count against the cap because it keeps the list the same length.
+   */
+  async enrol(label: string): Promise<EnrolResult> {
+    return this.serialize(() => this.enrolInQueue(label));
+  }
+
+  /**
+   * Enrol a device under the first label `pick` returns for the current registry, or
+   * `label-unavailable` when it returns null. The read, the choice and the write all happen in one
+   * queued turn, so two `collie open` exchanges racing cannot choose the same name.
+   */
+  async enrolAuto(pick: (existing: readonly string[]) => string | null): Promise<EnrolResult> {
+    return this.serialize(async () => {
+      const current = await this.readRegistryForWrite();
+      const label = pick(current.devices.map((d) => d.label));
+      if (label === null) return { ok: false, reason: "label-unavailable" };
+      return this.enrolInQueue(label, current);
+    });
+  }
+
+  /** {@link enrol}'s body. Runs inside {@link serialize} only; `known` is a read from this turn. */
+  private async enrolInQueue(label: string, known?: PairedRegistry): Promise<EnrolResult> {
+    const registry = known ?? (await this.readRegistryForWrite());
+    const now = this.now();
+    const holder = registry.devices.find((d) => d.label === label);
+    if (holder !== undefined && !isExpired(holder, now)) return { ok: false, reason: "duplicate-label" };
+    if (holder === undefined && registry.devices.length >= MAX_PAIRED_DEVICES) {
+      return { ok: false, reason: "device-limit" };
+    }
+    const token = generateToken(this.random);
+    const enrolled = enrolDevice(registry, { label, tokenHash: sha256Hex(token), now });
+    if (enrolled === null) return { ok: false, reason: "duplicate-label" };
+    await this.io.writeRegistry(enrolled.registry);
+    return { ok: true, token, label, replacedExpired: enrolled.replaced };
   }
 
   /**
@@ -842,7 +912,7 @@ export class PairingStore {
     devices: readonly { label: string; tokenHash: string; createdAt: number; expiresAt?: number }[],
   ): Promise<string[]> {
     return this.serialize(async () => {
-      const own = coerceRegistry(await this.io.readRegistry());
+      const own = await this.readRegistryForWrite();
       const collisions = devices.filter((d) => own.devices.some((x) => x.label === d.label)).map((d) => d.label);
       if (collisions.length > 0) return collisions;
       await this.io.writeRegistry({
@@ -865,7 +935,7 @@ export class PairingStore {
   /** Drop a device. False ⇒ no such label. */
   async revoke(label: string): Promise<boolean> {
     return this.serialize(async () => {
-      const next = removeDevice(coerceRegistry(await this.io.readRegistry()), label);
+      const next = removeDevice(await this.readRegistryForWrite(), label);
       if (!next) return false;
       await this.io.writeRegistry(next);
       return true;

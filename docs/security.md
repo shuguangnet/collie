@@ -36,7 +36,7 @@ The phone stores the returned token. Collie keeps only the hash, and the token i
 You do not need to restart the process; the running daemon applies pairings and revocations on
 the next request.
 
-The two device gates answer different questions, and you can run either, both, or neither:
+The two device gates answer different questions. Pairing is always required; the device-header gate is optional:
 
 | | asks | trusts | revoke by |
 | --- | --- | --- | --- |
@@ -46,8 +46,10 @@ The two device gates answer different questions, and you can run either, both, o
 Pairing requires no extra infrastructure. It fits a direct `tailscale serve` setup where no proxy
 exists to inject headers.
 
-Pairing gates every `/api` route, reads included. Only two routes stay open: `/api/health`, which
-a monitor or a load balancer asks, and `/api/pair`, which a device needs before it holds a token.
+Pairing gates ordinary `/api` routes, reads included. The exceptions are `/api/health`, which
+monitors ask, and the explicit enrolment routes: `/api/pair`, `/api/auth/status`, `/api/auth/login`
+and `/api/auth/open`. The auth routes keep their own front-door and transport checks, and the POSTs
+require a password or a one-time guide before issuing a token (see below).
 `/api/health` answers the build, the crew mode and three counts of the last seven days (how often the
 input box read as free, how often it could not be read, and how often a person sent by hand past a
 screen Collie could not read). The counts name no pane, no text and no person.
@@ -113,6 +115,67 @@ refuses an expired token too.
 On a host running multiple instances, prefix commands with `COLLIE_INSTANCE=<name>` and open that
 specific instance URL on the phone
 ([Multiple Collie instances on one host](deployment.md#multiple-collie-instances-on-one-host)).
+
+### Sign in with the access password
+
+Instead of typing a pairing code, a browser can sign in with one shared password set on the host:
+
+```bash
+bin/collie password set        # hidden prompt, twice; at least 12 characters
+bin/collie password status     # configured / not configured; never the password or its hash
+bin/collie password clear      # stop future password sign-ins
+```
+
+`collie password set --stdin` reads the password from standard input for automation. The password
+never arrives as a command argument or an environment variable, and only a salted scrypt verifier is
+written, owner-only, to `access-password.json` in the state folder. The terminal prompts are hidden
+and the command prints neither the password nor the verifier. A file that exists but cannot be read
+as a valid verifier is reported as unavailable and is not overwritten; pass `--force` only when you
+deliberately mean to replace it, or use `clear`.
+
+Password sign-in is available at `POST /api/auth/login`; `GET /api/auth/status` answers only whether
+a password is configured. A successful login mints an ordinary paired-device token, not a token made
+from the password: it appears in `collie devices list`, can be revoked on its own, expires under the
+same rules as any paired device, and is stored by the browser exactly like a pairing token. The shared
+password is never accepted as an API bearer. The login route is open only through an HTTPS front door
+or a strict loopback HTTP connection; a request that merely claims `X-Forwarded-Proto: https` is not
+trusted. It requires a same-origin `Origin`, shares the per-source rate limiter, and caps concurrent
+key derivations so a burst of guesses cannot exhaust the host. A wrong password gets one uniform
+answer that never says which part was wrong; a host with no password configured is a separate answer,
+and `GET /api/auth/status` already tells a caller that much.
+
+A device name is required. A name an active device still holds is refused with `409
+duplicate-label`; it is not replaced or overwritten. Only an expired device's name is reused, and
+that replacement revokes the old entry and cleans up its launcher exactly as a new pairing does. The
+host keeps at most 64 paired devices.
+
+Clearing the password stops future password sign-ins but does not revoke devices already signed in.
+Changing the password also leaves existing devices valid. To end a browser's access, revoke it by
+name with `collie devices revoke <label>`.
+
+### Open the host browser with `collie open`
+
+On the machine that runs Collie, `collie open` opens the desktop browser already signed in, with no
+code to type:
+
+```bash
+bin/collie open
+```
+
+The command, running as the same user as the bridge, writes a 256-bit guide that is good for two
+minutes and can be spent once. It opens only `http://127.0.0.1:<port><basePath>#collie-open=<guide>`;
+the guide lives in the URL fragment, so it is not sent to a front door and does not appear in its
+access log. The page removes the fragment before React Router, any loader or any application code
+runs, then exchanges the guide once for an ordinary device token. The guide is deleted as part of the
+exchange, so a crash or a later request cannot spend it again; a used or expired guide fails closed
+and asks you to run `collie open` again. The command never prints the URL, because terminal
+scrollback is another place a credential should not linger.
+
+`collie open` is not a remote sign-in: it refuses any host other than loopback and has no effect on a
+phone. Holding the URL alone does not grant access without the guide, and a localhost request without
+the guide is not signed in by its address, user agent or headers. If the browser already holds a
+valid token, the boot does not exchange the guide into a second device; it probes the existing token
+first. Guides are independent of `collie pair`, so one does not invalidate the other.
 
 ### Origin, instance, user and state directory
 
@@ -190,15 +253,15 @@ Key security boundaries and risks:
 - **It runs with your user permissions.** Collie inherits your full access rights, including
   `~/.ssh`, `git push --force`, `rm -rf`, and `sudo`.
 - **Authentication identifies devices, not humans.** Tailscale verifies the hardware endpoint rather
-  than the user holding it. There are no passwords or user sessions; an unlocked or stolen phone
-  provides an open shell. Pairing ties access to a credential on the device
+  than the user holding it. The access password enrols a device; it does not ask for the password
+  on every visit. An unlocked or stolen signed-in phone provides an open shell. Pairing ties access to a credential on the device
   ([above](#pair-a-device--the-write-credential)), so revoke a lost phone at once. The built-in
   idle lock merely blanks an unattended screen and provides no actual security boundary
   ([ADR 0007](../.adr/0007-the-idle-lock-is-a-pause-not-a-gate.md)).
 - **All local system users can reach the port.** Standard terminal multiplexer sockets (`tmux`,
   `zellij`, `herdr`) use filesystem permissions to restrict access to other local users. Collie
   listens on a local TCP port, which exposes it to every local UID. Reads need the pairing token,
-  so another local user who holds no token reads nothing but `/api/health`. The token is the
+  so another local user who holds no token sees only health and the sign-in bootstrap metadata. The token is the
   boundary: a local user who can read your browser profile can read the token too
   ([ARCHITECTURE.md §6](../ARCHITECTURE.md#6-security-model)).
 - **A held permission waits for a person's tap.** With `collie hooks install claude

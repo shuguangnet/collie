@@ -144,6 +144,19 @@ export const API_ERROR_CODES = [
   "pairing.duplicate_label",
   "device.unknown",
 
+  // Password login and `collie open` — POST /api/auth/* (ADR 0133)
+  "auth.bad_request",
+  "auth.bad_label",
+  "auth.password_not_configured",
+  "auth.password_incorrect",
+  "auth.password_unavailable",
+  "auth.duplicate_label",
+  "auth.device_limit",
+  "auth.open_no_guide",
+  "auth.open_expired",
+  "auth.open_bad_token",
+  "auth.label_unavailable",
+
   // Addressing — the `(host, session)` a request named does not exist
   "session.unknown",
   "host.unknown",

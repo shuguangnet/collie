@@ -27,8 +27,8 @@ import { MUX_LOGO_PATH, OPERATOR_FONTS_PATH } from "./types.ts";
 // ── DENY BY DEFAULT, PINNED (ADR 0086) ────────────────────────────────────────────────────────
 // `apiFrontGate` is the one pairing check in front of the whole `/api/` dispatcher. These tests hold
 // it to three promises: every `/api/` path `bridge/server.ts` names is refused without a token, the
-// allowlist is exactly `GET|HEAD /api/health` and `POST /api/pair`, and no spelling of a path reaches
-// a route without passing the same check the route would. `Bun.serve` is not stood up for the real
+// allowlist is exactly `GET|HEAD /api/health`, `POST /api/pair` and the three `/api/auth/*` issuance
+// entries, and no spelling of a path reaches a route without passing the same check the route would. `Bun.serve` is not stood up for the real
 // dispatcher (CLAUDE.md), so its wiring is pinned by source below, as access-jwt.test.ts pins its own.
 
 const SERVER_SRC = readFileSync(join(import.meta.dir, "server.ts"), "utf8");
@@ -163,14 +163,19 @@ describe("the route table read off server.ts", () => {
 });
 
 describe("apiFrontGate: every /api/ path but the allowlist is refused without a token", () => {
-  test("the allowlist is GET|HEAD /api/health and POST /api/pair, and nothing else", () => {
+  test("the allowlist is health, pair and the three auth entries, and nothing else", () => {
     expect(OPEN_API_ROUTES).toEqual([
       { path: "/api/health", methods: ["GET", "HEAD"] },
       { path: "/api/pair", methods: ["POST"] },
+      { path: "/api/auth/status", methods: ["GET"] },
+      { path: "/api/auth/login", methods: ["POST"] },
+      { path: "/api/auth/open", methods: ["POST"] },
     ]);
     expect(isOpenApiRoute("/api/pair", "GET")).toBe(false);
     expect(isOpenApiRoute("/api/health", "POST")).toBe(false);
     expect(isOpenApiRoute("/api/health/", "GET")).toBe(false);
+    expect(isOpenApiRoute("/api/auth/status", "POST")).toBe(false);
+    expect(isOpenApiRoute("/api/auth/login", "GET")).toBe(false);
   });
 
   for (const paired of [true, false]) {

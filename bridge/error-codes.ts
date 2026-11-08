@@ -271,6 +271,25 @@ export const ERROR_CODES = {
   /** Revoke named a label no device holds. */
   "device.unknown": "unknown device",
 
+  // ── Password login and `collie open`: POST /api/auth/* (ADR 0133) ──────────────────
+  //
+  // These routes hand out an ordinary device token; the sentences look like codes for the same
+  // reason pairing's do (`web/src/lib/api.ts` keys on them), while `code` is the stable field every
+  // other surface reads. A wrong password is one answer for "absent" and "incorrect" on the wire —
+  // the 403 below is only for a host that has no password configured at all, and it never says
+  // whether one was ever set.
+  "auth.bad_request": "bad-request",
+  "auth.bad_label": "bad-label",
+  "auth.password_not_configured": "password-not-configured",
+  "auth.password_incorrect": "password-incorrect",
+  "auth.password_unavailable": "password-unavailable",
+  "auth.duplicate_label": "duplicate-label",
+  "auth.device_limit": "device-limit",
+  "auth.open_no_guide": "no-guide",
+  "auth.open_expired": "expired",
+  "auth.open_bad_token": "bad-token",
+  "auth.label_unavailable": "label-unavailable",
+
   // ── The prompt-cache watch list: /api/notifications/cache-watch (ADR 0042) ─────────
   /**
    * The `(host, session, paneId)` the request named is in no current snapshot — closed, renumbered,

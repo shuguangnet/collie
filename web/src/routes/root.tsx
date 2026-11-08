@@ -28,6 +28,8 @@ import { ScreenTransition } from "@/components/screen-transition";
 import { ReportDoor } from "@/components/report-door";
 import { CrewProvider } from "@/components/crew-provider";
 import { CollieMark } from "@/components/collie-mark";
+import { AccessSignIn } from "@/components/access-sign-in";
+import { usePairing } from "@/lib/pairing";
 import { TourHost } from "@/components/tour-sheet";
 import { describeThrownError } from "@/lib/api-error-message";
 import { findPane, paneRowKey } from "@/lib/hosts";
@@ -75,6 +77,7 @@ export function RootLayout() {
   // pairs with it — returns `HomeData`. React Router types `useLoaderData()` as `unknown` in data
   // mode; the element does not mount until its own loader has resolved.
   const data = useLoaderData() as HomeData;
+  const { refused } = usePairing();
   // The update reading, owned above the router (`components/update-screen-provider.tsx`). Read here
   // rather than inside the strip so the band's children stay a plain list of facts.
   const updateScreen = useOptionalUpdateScreen();
@@ -144,6 +147,9 @@ export function RootLayout() {
   useEffect(() => {
     noteSnapshotCrew(snapshotUpdate);
   }, [snapshotUpdate]);
+
+  // A confirmed authentication refusal, not an outage: leave offline/503 rendering unchanged.
+  if (refused && !data.stale) return <AccessSignIn />;
 
   // A viewport-height flex column: the header bar, then the ribbon band's zero-height anchor, and
   // the active route fills the rest (each route root is `min-h-0 flex-1`). The band hangs from the

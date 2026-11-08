@@ -25,6 +25,7 @@ import {
   hashesEqual,
   isExpired,
   MAX_LIFETIME_MS,
+  MAX_PAIRED_DEVICES,
   newPending,
   normalizeCode,
   normalizeLabel,
@@ -553,6 +554,129 @@ describe("PairingStore", () => {
     const claimed = await store.claim("ABCD2345", "phone");
     if (!claimed.ok) throw new Error("claim failed");
     expect(claimed.token).toBe(Buffer.alloc(32, 0x41).toString("base64url"));
+  });
+
+  // ── Code-less enrolment (ADR 0133): `POST /api/auth/login` and `POST /api/auth/open` ──────────
+  test("enrol mints a token and stores only its hash, exactly as claim does", async () => {
+    const { io, state } = memoryIo();
+    const store = new PairingStore(io, () => 1000, fixedRandom(0x42));
+    const enrolled = await store.enrol("phone");
+    if (!enrolled.ok) throw new Error(`expected success, got ${enrolled.reason}`);
+    expect(enrolled.label).toBe("phone");
+    expect(enrolled.replacedExpired).toBe(false);
+    expect(JSON.stringify(state.registry)).not.toContain(enrolled.token);
+    expect(coerceRegistry(state.registry).devices).toEqual([
+      { label: "phone", tokenHash: sha256Hex(enrolled.token), createdAt: 1000, lastSeenAt: 1000 },
+    ]);
+    expect(store.resolve(enrolled.token)?.label).toBe("phone");
+  });
+
+  test("enrol refuses a LIVE duplicate label and writes nothing", async () => {
+    const { io, state } = memoryIo({
+      registry: { devices: [{ label: "phone", tokenHash: sha256Hex("live"), createdAt: 1, lastSeenAt: 1 }] },
+    });
+    const store = new PairingStore(io, () => 1000);
+    const writesBefore = state.writes;
+    expect(await store.enrol("phone")).toEqual({ ok: false, reason: "duplicate-label" });
+    expect(state.writes).toBe(writesBefore);
+    expect(store.resolve("live")?.label).toBe("phone");
+  });
+
+  test("enrol takes over an EXPIRED label and revokes its token in the same write", async () => {
+    const { io, state } = memoryIo({
+      registry: {
+        devices: [
+          { label: "phone", tokenHash: sha256Hex("old"), createdAt: 1, lastSeenAt: 1, expiresAt: 1000 },
+          { label: "tablet", tokenHash: sha256Hex("tab"), createdAt: 1, lastSeenAt: 1 },
+        ],
+      },
+    });
+    const store = new PairingStore(io, () => 1000);
+    const writesBefore = state.writes;
+    const enrolled = await store.enrol("phone");
+    if (!enrolled.ok) throw new Error(`expected success, got ${enrolled.reason}`);
+    expect(enrolled.replacedExpired).toBe(true);
+    expect(state.writes).toBe(writesBefore + 1);
+    expect(coerceRegistry(state.registry).devices.map((d) => d.label)).toEqual(["tablet", "phone"]);
+    expect(store.resolve("old")).toBeNull();
+    expect(store.resolve(enrolled.token)?.label).toBe("phone");
+  });
+
+  test("enrol refuses a new label at the device cap", async () => {
+    const full = Array.from({ length: MAX_PAIRED_DEVICES }, (_, i) => ({
+      label: `device-${i}`,
+      tokenHash: sha256Hex(`t-${i}`),
+      createdAt: 1,
+      lastSeenAt: 1,
+    }));
+    const { io, state } = memoryIo({ registry: { devices: full } });
+    const store = new PairingStore(io, () => 1000);
+    const writesBefore = state.writes;
+    expect(await store.enrol("one-more")).toEqual({ ok: false, reason: "device-limit" });
+    expect(state.writes).toBe(writesBefore);
+  });
+
+  test("an expired replacement at the cap is allowed: the list stays the same length", async () => {
+    // The first row is expired, so replacing it does not grow the registry past the cap.
+    const full = Array.from({ length: MAX_PAIRED_DEVICES }, (_, i) => {
+      const row = {
+        label: i === 0 ? "old-phone" : `device-${i}`,
+        tokenHash: sha256Hex(`t-${i}`),
+        createdAt: 1,
+        lastSeenAt: 1,
+      };
+      return i === 0 ? { ...row, expiresAt: 999 } : row;
+    });
+    const { io, state } = memoryIo({ registry: { devices: full } });
+    const store = new PairingStore(io, () => 1000);
+    const enrolled = await store.enrol("old-phone");
+    if (!enrolled.ok) throw new Error(`expected success, got ${enrolled.reason}`);
+    expect(enrolled.replacedExpired).toBe(true);
+    expect(coerceRegistry(state.registry).devices).toHaveLength(MAX_PAIRED_DEVICES);
+  });
+
+  test("enrolAuto picks the label the chooser returns and enrols it", async () => {
+    const { io } = memoryIo({
+      registry: { devices: [{ label: "phone", tokenHash: sha256Hex("p"), createdAt: 1, lastSeenAt: 1 }] },
+    });
+    const store = new PairingStore(io, () => 1000);
+    const seen: string[][] = [];
+    const enrolled = await store.enrolAuto((existing) => {
+      seen.push([...existing]);
+      return "this browser";
+    });
+    expect(seen).toEqual([["phone"]]);
+    expect(enrolled).toMatchObject({ ok: true, label: "this browser" });
+  });
+
+  test("enrolAuto reports label-unavailable when the chooser exhausts its space", async () => {
+    const { io, state } = memoryIo();
+    const store = new PairingStore(io, () => 1000);
+    const writesBefore = state.writes;
+    expect(await store.enrolAuto(() => null)).toEqual({ ok: false, reason: "label-unavailable" });
+    expect(state.writes).toBe(writesBefore);
+  });
+
+  test("concurrent enrolAuto calls in one process choose different labels", async () => {
+    const { io } = memoryIo();
+    const store = new PairingStore(io, () => 1000);
+    const pick = (existing: readonly string[]): string =>
+      existing.length === 0 ? "Collie Open" : `Collie Open ${existing.length + 1}`;
+    const [a, b] = await Promise.all([store.enrolAuto(pick), store.enrolAuto(pick)]);
+    expect([a, b].every((r) => r.ok)).toBe(true);
+    const labels = [a, b].flatMap((r) => (r.ok ? [r.label] : []));
+    expect(new Set(labels).size).toBe(2);
+  });
+
+  test("a registry that is present but unreadable is never overwritten by an enrolment", async () => {
+    const { io, state } = memoryIo();
+    // A bare value (not a registry object) is what a torn or hand-edited file can look like.
+    // SAFETY: the fake violates the seam on purpose; the store must throw before trusting it.
+    io.readRegistry = async () => 42 as never;
+    const store = new PairingStore(io, () => 1000);
+    await expect(store.enrol("phone")).rejects.toBeInstanceOf(RegistryUnreadableError);
+    await expect(store.enrolAuto(() => "phone")).rejects.toBeInstanceOf(RegistryUnreadableError);
+    expect(state.registry).toBeNull();
   });
 });
 

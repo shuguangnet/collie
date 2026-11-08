@@ -478,6 +478,12 @@ This section holds the details per device.
 Collie is a web app. The browser adds it to your home screen without an app store, giving it a
 standalone icon and full-screen view. Collie answers no device until it is paired, so the dashboard
 shows **Pair this device** until then ([Pair a device](security.md#pair-a-device--the-write-credential)).
+If you set an access password on the host with `collie password set`, the same screen offers a
+password form instead, and a successful sign-in still creates a normal device you can revoke by name
+([Sign in with the access password](security.md#sign-in-with-the-access-password)). On the host's own
+desktop, `collie open` signs the browser in without a code
+([Open the host browser with `collie open`](security.md#open-the-host-browser-with-collie-open)), which is
+handy for a quick look from that machine.
 
 ![Put Collie on the home screen: iPhone and Android steps.](images/install/pwa-install.svg)
 

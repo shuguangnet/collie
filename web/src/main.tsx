@@ -3,7 +3,7 @@ import "./lib/wipe-resume";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-import { App } from "./App";
+import { settleOpenBoot } from "./lib/open-boot";
 import { onPreloadError } from "./lib/chunk-reload";
 import { designPrefs, initDesign, mathEngineOf } from "./lib/design";
 import { isMathLoadError, loadMathEngine } from "./lib/math/engine";
@@ -49,6 +49,10 @@ window.addEventListener("vite:preloadError", (event) => {
 
 const root = document.getElementById("root");
 if (!root) throw new Error("missing #root");
+
+await settleOpenBoot();
+// Importing App creates the data router: only do so after the guide has been erased and exchanged.
+const { App } = await import("./App");
 
 createRoot(root).render(
   <StrictMode>
