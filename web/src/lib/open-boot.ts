@@ -10,8 +10,19 @@ export function takeOpenGuide(location: Pick<Location, "hash" | "pathname" | "se
   // A failed history operation must not proceed with a secret still visible in the URL.
   try { history.replaceState(history.state, "", location.pathname + location.search); }
   catch { return null; }
-  if (location.protocol !== "http:" || location.hostname !== "127.0.0.1") return null;
+  const localHttp = location.protocol === "http:" && ["127.0.0.1", "localhost", "[::1]"].includes(location.hostname);
+  if (!localHttp && location.protocol !== "https:") return null;
   return match?.[1] ?? null;
+}
+
+/**
+ * Whether a fragment that arrived after boot carries a guide. `collie open` on a tab where the app is
+ * already open changes only the fragment: the browser does not reload, so {@link takeOpenGuide} never
+ * runs and the guide is never spent. main.tsx reloads once when this is true; that boot path erases
+ * the fragment before exchanging it, so the reload cannot loop.
+ */
+export function guideArrived(hash: string): boolean {
+  return hash.startsWith("#collie-open=");
 }
 
 type Probe = "valid" | "revoked" | "expired" | "unknown";

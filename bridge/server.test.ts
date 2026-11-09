@@ -2028,12 +2028,7 @@ describe("open routes — ordinary /api routes ask the pairing gate", () => {
       expect(at).toBeGreaterThan(0);
       const handler = src.slice(at, src.indexOf("\n      }\n", at));
       expect(handler).toContain("noStore(");
-      if (route === "open") {
-        expect(handler).toContain('authTransport(authFactsOf(), { requireOrigin: true }) !== "loopback"');
-        expect(handler).toContain('checkAccess(req, cfg, "write")');
-      } else {
-        expect(handler).toContain(route === "status" ? 'authDenied("read", false)' : 'authDenied("write", true)');
-      }
+      expect(handler).toContain(route === "status" ? 'authDenied("read", false)' : 'authDenied("write", true)');
       if (route !== "status") {
         expect(handler).toContain("authLimited()");
         expect(handler).toContain("readAuthBody()");

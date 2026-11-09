@@ -7,10 +7,10 @@ import {
 } from "../bridge/open-guide.ts";
 import { capture } from "./fakes.ts";
 import { EXIT } from "./io.ts";
-import { cmdOpen, openBasePath, openUrlFor, type OpenDeps } from "./open.ts";
+import { cmdOpen, openBasePath, openUrlFor, remoteOpenUrlFor, type OpenDeps } from "./open.ts";
 
 // `collie open` (ADR 0133). The URL is the whole credential path: a guide in the FRAGMENT, on
-// 127.0.0.1 only, and no argument can redirect it. These tests pin the pure address rules and then
+// loopback by default or the configured HTTPS front door, never an arbitrary argument URL. These tests pin the pure address rules and then
 // the verb's two observable halves — what it opens, and what it refuses to say.
 
 const TOKEN = Buffer.alloc(32, 0x11).toString("base64url");
@@ -95,7 +95,36 @@ describe("openBasePath", () => {
   });
 });
 
+describe("remoteOpenUrlFor", () => {
+  test("accepts HTTPS only at the exact instance mount", () => {
+    expect(remoteOpenUrlFor("https://desk.example/collie/", "/collie/", TOKEN)).toBe(`https://desk.example/collie/#collie-open=${TOKEN}`);
+    expect(remoteOpenUrlFor("https://desk.example", "/", TOKEN)).toBe(`https://desk.example/#collie-open=${TOKEN}`);
+    for (const bad of ["http://desk.example/", "https://u:p@desk.example/", "https://desk.example/?x=1", "https://desk.example/#x", "https://desk.example/other/", "javascript:alert(1)"]) {
+      expect(remoteOpenUrlFor(bad, "/", TOKEN)).toBeNull();
+    }
+  });
+});
+
 describe("cmdOpen", () => {
+  test("remote print deliberately reveals only the configured HTTPS fragment link", async () => {
+    const d = deps({ remoteUrl: () => "https://desk.example/collie/", openUrl: () => { throw Error("must not launch"); } });
+    expect(await cmdOpen(d, ["--remote", "--print"])).toBe(EXIT.OK);
+    expect(d.io.stdout).toEqual([`https://desk.example/collie/#collie-open=${TOKEN}`]);
+    expect(d.io.stderr.join(" ")).toContain("full-access");
+    expect(d.guideIo.text()).not.toContain(TOKEN);
+  });
+  test("remote mode never falls back to HTTP or mints on bad configuration", async () => {
+    for (const address of ["", "http://desk.example/collie/", "https://desk.example/wrong/"]) {
+      const d = deps({ remoteUrl: () => address });
+      expect(await cmdOpen(d, ["--remote"])).toBe(EXIT.FAIL);
+      expect(d.guideIo.text()).toBeNull();
+    }
+  });
+  test("duplicate or unknown flags do not mint", async () => {
+    for (const args of [["--print", "--print"], ["--url", "https://other.example"]]) {
+      const d = deps(); expect(await cmdOpen(d, args)).toBe(EXIT.USAGE); expect(d.guideIo.text()).toBeNull();
+    }
+  });
   test("mints once, opens the exact loopback URL, and never prints the token", async () => {
     const d = deps();
     const opened: string[] = [];

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { JsonObject, JsonValue } from "./json.ts";
 import { readOwnerFile, removeOwnerFile, writeOwnerFileAtomic } from "./owner-file.ts";
 
-// ── `collie open`: A SHORT-LIVED GUIDE, SPENT ONCE FROM A LOOPBACK FRAGMENT ─────────────────────
+// ── `collie open`: A SHORT-LIVED GUIDE, SPENT ONCE FROM A URL FRAGMENT ─────────────────────
 //
 // The CLI mints a 256-bit guide and writes only its SHA-256 here. The guide rides the URL fragment,
 // so it never reaches a proxy's request line; the browser clears it before React Router starts and

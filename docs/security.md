@@ -163,16 +163,20 @@ bin/collie open
 ```
 
 The command, running as the same user as the bridge, writes a 256-bit guide that is good for two
-minutes and can be spent once. It opens only `http://127.0.0.1:<port><basePath>#collie-open=<guide>`;
+minutes and can be spent once. By default it opens `http://127.0.0.1:<port><basePath>#collie-open=<guide>`;
 the guide lives in the URL fragment, so it is not sent to a front door and does not appear in its
 access log. The page removes the fragment before React Router, any loader or any application code
 runs, then exchanges the guide once for an ordinary device token. The guide is deleted as part of the
 exchange, so a crash or a later request cannot spend it again; a used or expired guide fails closed
 and asks you to run `collie open` again. The command never prints the URL, because terminal
-scrollback is another place a credential should not linger.
+scrollback is another place a credential should not linger, unless you explicitly request `--print`.
 
-`collie open` is not a remote sign-in: it refuses any host other than loopback and has no effect on a
-phone. Holding the URL alone does not grant access without the guide, and a localhost request without
+To sign in another browser, run `collie open --remote --print` on the host and privately open the
+printed link within two minutes. `--remote` uses the configured HTTPS front door (public URL or
+Tailnet address), never an arbitrary URL argument; `--print` skips launching the host browser.
+Anyone holding this link can enrol a full-access device, so do not paste it into chat, logs or
+screenshots. The exchange requires the same HTTPS front-door and Origin checks as password login;
+plain remote HTTP is not accepted. Holding the URL without the guide grants nothing, and a localhost request without
 the guide is not signed in by its address, user agent or headers. If the browser already holds a
 valid token, the boot does not exchange the guide into a second device; it probes the existing token
 first. Guides are independent of `collie pair`, so one does not invalidate the other.

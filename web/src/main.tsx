@@ -3,7 +3,7 @@ import "./lib/wipe-resume";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
-import { settleOpenBoot } from "./lib/open-boot";
+import { guideArrived, settleOpenBoot } from "./lib/open-boot";
 import { onPreloadError } from "./lib/chunk-reload";
 import { designPrefs, initDesign, mathEngineOf } from "./lib/design";
 import { isMathLoadError, loadMathEngine } from "./lib/math/engine";
@@ -45,6 +45,13 @@ startPushTitleSync();
 window.addEventListener("vite:preloadError", (event) => {
   if (isMathLoadError(event.payload)) return;
   onPreloadError(event);
+});
+
+// `collie open` on a tab that already has the app open only changes the fragment, so the browser
+// does not reload and settleOpenBoot() below never runs for that guide. Reload once; the boot path
+// erases the fragment before exchanging it, so this cannot loop.
+window.addEventListener("hashchange", () => {
+  if (guideArrived(window.location.hash)) window.location.reload();
 });
 
 const root = document.getElementById("root");

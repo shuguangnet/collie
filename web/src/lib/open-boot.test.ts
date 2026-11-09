@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { createOpenBoot, takeOpenGuide, type OpenBootDeps } from "./open-boot";
+import { createOpenBoot, guideArrived, takeOpenGuide, type OpenBootDeps } from "./open-boot";
 
 function deps(held: string | null = null) {
   let token = held;
@@ -12,14 +12,19 @@ function deps(held: string | null = null) {
   };
 }
 
-describe("one-time local boot", () => {
+describe("one-time browser boot", () => {
+  test("accepts remote HTTPS while erasing the guide before exchange", () => {
+    const replaceState = vi.fn(); const guide = "a".repeat(43);
+    expect(takeOpenGuide({ hash: `#collie-open=${guide}`, pathname: "/collie/", search: "", hostname: "desk.example", protocol: "https:" }, { replaceState, state: null })).toBe(guide);
+    expect(replaceState).toHaveBeenCalledWith(null, "", "/collie/");
+  });
   test("erases a fragment without adding history", () => {
     const replaceState = vi.fn();
     const guide = "a".repeat(43);
     expect(takeOpenGuide({ hash: `#collie-open=${guide}`, pathname: "/collie/", search: "", hostname: "127.0.0.1", protocol: "http:" }, { replaceState, state: null })).toBe(guide);
     expect(replaceState).toHaveBeenCalledWith(null, "", "/collie/");
   });
-  test("rejects remote or malformed fragments, still erasing them", () => {
+  test("rejects insecure remote HTTP or malformed fragments, still erasing them", () => {
     for (const [hostname, guide] of [["other.example", "a".repeat(43)], ["127.0.0.1", "short"]]) {
       const replaceState = vi.fn();
       expect(takeOpenGuide({ hash: `#collie-open=${guide}`, pathname: "/", search: "", hostname, protocol: "http:" }, { replaceState, state: null })).toBeNull();
@@ -57,6 +62,11 @@ describe("one-time local boot", () => {
     expect(d.wipe).toHaveBeenCalledExactlyOnceWith("expired");
     expect(d.wipe.mock.invocationCallOrder[0]).toBeLessThan(d.save.mock.invocationCallOrder[0]);
     expect(d.token()).toBe("issued-token");
+  });
+  test("a fragment arriving after boot is recognised so the page reloads once", () => {
+    expect(guideArrived(`#collie-open=${"a".repeat(43)}`)).toBe(true);
+    expect(guideArrived("#/workspaces")).toBe(false);
+    expect(guideArrived("")).toBe(false);
   });
   test("no guide performs no requests; failed exchanges are never silently retried", async () => {
     const d = deps(); await createOpenBoot(null, d).settle(); expect(d.exchange).not.toHaveBeenCalled();

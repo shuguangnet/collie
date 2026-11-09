@@ -875,7 +875,7 @@ export const COMMANDS: readonly Command[] = [
   // URL: the loopback address and the mount come from this install's own context.
   {
     name: "open",
-    summary: "open this machine's Collie in its own browser with a two-minute one-time link",
+    summary: "open Collie with a two-minute one-time link; --remote uses HTTPS, --print shares the link",
     run: (args, s) => cmdOpen(openDeps(loadContext(s.io.err), s.io), args),
   },
   // ── Push subscriptions ─────────────────────────────────────────────────────

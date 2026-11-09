@@ -4281,16 +4281,11 @@ export function startServer(opts: {
         );
       }
 
-      // `POST /api/auth/open`: a `collie open` guide, spent once, for the browser on this host.
-      // STRICTLY loopback: unlike login, this exchange is not offered through an HTTPS front door.
-      // `collie open` only ever opens `http://127.0.0.1`, and accepting a proxied request here would
-      // let a remote caller spend a guide this host minted for its own browser.
+      // A host-minted guide may be spent locally or through the configured HTTPS front door.
+      // The guide, not network position, authorises enrolment (ADR 0135).
       if (pathname === "/api/auth/open" && req.method === "POST") {
-        if (authTransport(authFactsOf(), { requireOrigin: true }) !== "loopback") {
-          return noStore(text("collie open is only available from this host", 403));
-        }
-        const gate = checkAccess(req, cfg, "write");
-        if (!gate.ok) return noStore(text(gate.reason, 403));
+        const denied = authDenied("write", true);
+        if (denied) return denied;
         const limited = authLimited();
         if (limited) return limited;
         if (openGuideStore === undefined || !pairing) return pairingUnavailable();
@@ -4308,7 +4303,7 @@ export function startServer(opts: {
         >;
         try {
           exchanged = await openGuideStore.exchange(parsed.guide, async () => {
-            const enrolled = await pairing.enrolAuto((existing) => nextOpenLabel(existing));
+            const enrolled = await pairing.enrolAuto((existing) => nextOpenLabel(existing, authFactsOf().hostLoopback ? "Local browser" : "Browser"));
             return enrolled.ok ? { ok: true as const, value: enrolled } : { ok: false as const, reason: enrolled.reason };
           });
         } catch (err) {

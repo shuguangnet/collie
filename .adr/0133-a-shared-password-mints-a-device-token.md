@@ -1,6 +1,6 @@
 # 0133: A shared password mints a device token, never a second API credential
 
-- **Status:** Accepted
+- **Status:** Accepted; strict-loopback-only open exchange superseded by [ADR 0135](./0135-open-guides-can-cross-the-https-front-door.md).
 - **Date:** 2026-11-08
 - **Shipped in:** pending
 - **Relates to:** [ADR 0086](./0086-reads-need-the-pairing-token.md) (reads need the pairing token;

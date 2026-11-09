@@ -26,10 +26,14 @@ Running a crew? Update the lead first; members follow on their own. Details:
 ### Added
 
 - **A host password can sign a browser in, and the browser gets its own revocable device.** Set one from the terminal with `collie password set` (hidden prompt twice, or `--stdin`); only a salted scrypt verifier is stored, never the password. The sign-in screen then offers a password form beside the pairing code, and a successful sign-in mints an ordinary paired-device token that shows in `collie devices list` and can be revoked on its own. A wrong password gets one uniform answer, the route honours the same Host, Origin and HTTPS-or-strict-loopback rules as pairing, and clearing the password stops future sign-ins without revoking devices already in use. The shared password is never an API bearer.
-- **`collie open` signs the host's own browser in without a code.** The command mints a two-minute, single-use guide for the current user, opens only `http://127.0.0.1:<port>#collie-open=…` with the guide in the fragment, and never prints the URL. The page removes the fragment before the router or any loader starts and exchanges it once for an ordinary device token, so a used or expired guide fails closed and asks for `collie open` again. It is desktop-only and does nothing for a phone.
+- **`collie open` signs the host's own browser in without a code.** The command mints a two-minute, single-use guide for the current user, defaults to `http://127.0.0.1:<port>#collie-open=…` with the guide in the fragment, and never prints the URL. The page removes the fragment before the router or any loader starts and exchanges it once for an ordinary device token, so a used or expired guide fails closed and asks for `collie open` again. Remote HTTPS link support is described below.
 - **Fixed machines can verify their persistent runtime before reporting success.** `collie crew add --persistent` checks the pinned Crew link, the member's actual supervisor and instance, Linux linger or macOS login requirements, and mux availability. `doctor --only persistence --json` and `status --json` share the verdict; the machine page explains recovery without changing device pairing.
 
 - **Saved machine connections follow you across signed-in browsers.** The Machines page saves bounded SSH setup profiles on the Collie server, not in browser storage. Run its id-only `collie crew add --saved <id>` command on the host to use the existing SSH installer and persistence checks; saving alone makes no outbound request and does not claim the machine is connected. Crew remains the authority for joined identities and automatic reconnect, and deleting a profile does not remove a member. SSH passwords and keys are never collected by the form.
+
+### Changed
+
+- **One-time open links can sign in a remote HTTPS browser.** `collie open --remote --print` explicitly shares a two-minute, single-use guide at the configured HTTPS front door. Host, Origin, ingress and device-token gates remain intact; default open still launches localhost without printing secrets.
 
 ### Fixed
 

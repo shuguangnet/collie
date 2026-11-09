@@ -11,13 +11,15 @@ import {
 } from "../bridge/open-guide.ts";
 import type { CliContext } from "./context.ts";
 import { EXIT, type Io } from "./io.ts";
+import { realExec } from "./sys.ts";
+import { bridgeUrl } from "./tailnet.ts";
 
-// `collie open` — the host's own browser, one command, no code to type (ADR 0133).
+// `collie open` — one browser, one short-lived guide (ADR 0133, extended by ADR 0135).
 //
 // The guide is minted HERE, in the terminal that already proves the caller is the operator, and
 // travels only in the URL FRAGMENT. A fragment is not sent in the request line, so a front door's
 // access log never sees it; the page removes it before React Router starts and spends it once. The
-// URL is never printed: the terminal's scrollback is another place a credential should not linger.
+// URL is printed only with explicit --print: terminal scrollback then holds a short-lived credential.
 
 export interface OpenDeps {
   ctx: Pick<CliContext, "port" | "basePath" | "stateDir">;
@@ -28,11 +30,16 @@ export interface OpenDeps {
   openUrl?: (url: string) => void | Promise<void>;
   /** Injected so a test pins the guide token; production leaves it. */
   random?: (n: number) => Buffer;
+  /** Resolve only the instance's configured front door, never a caller-supplied arbitrary URL. */
+  remoteUrl?: () => string;
 }
 
 /** Build the production seams from the resolved context. */
 export function openDeps(ctx: CliContext, io: Io): OpenDeps {
-  return { ctx, io, guideIo: fileOpenGuideIo(ctx.stateDir), openUrl: openWithPlatform };
+  return {
+    ctx, io, guideIo: fileOpenGuideIo(ctx.stateDir), openUrl: openWithPlatform,
+    remoteUrl: () => bridgeUrl(realExec(ctx.env, ctx.home), ctx),
+  };
 }
 
 /**
@@ -62,8 +69,20 @@ export function openUrlFor(
   if (!isOpenGuideToken(token)) return null;
   const mount = openBasePath(basePath);
   if (mount === null) return null;
-  // 127.0.0.1, never a hostname and never the tailnet name: `collie open` is the host's own browser.
+  // The default stays local; --remote deliberately chooses the configured HTTPS front door.
   return `http://127.0.0.1:${port}${mount}#${OPEN_GUIDE_FRAGMENT}=${token}`;
+}
+
+/** A configured HTTPS front door at this instance's exact mount, with no credential/query input. */
+export function remoteOpenUrlFor(address: string, basePath: string, token: string): string | null {
+  const mount = openBasePath(basePath);
+  if (mount === null || !isOpenGuideToken(token) || /[\s\\]/.test(address)) return null;
+  let url: URL;
+  try { url = new URL(address); } catch { return null; }
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password || url.search || url.hash) return null;
+  if (url.pathname !== mount) return null;
+  url.hash = `${OPEN_GUIDE_FRAGMENT}=${token}`;
+  return url.href;
 }
 
 /**
@@ -100,12 +119,23 @@ export function openWithPlatform(url: string): Promise<void> {
   });
 }
 
-/** `collie open`. Any argument is an unknown URL and is refused before a guide is minted. */
+/** `collie open [--remote] [--print]`. No arbitrary URL or host argument is accepted. */
 export async function cmdOpen(deps: OpenDeps, args: readonly string[]): Promise<number> {
-  if (args.length > 0) {
-    deps.io.err("usage: collie open");
-    deps.io.err("This command opens this machine's own Collie; it takes no URL or instance argument.");
+  if (args.some((arg) => arg !== "--remote" && arg !== "--print") || new Set(args).size !== args.length) {
+    deps.io.err("usage: collie open [--remote] [--print]");
+    deps.io.err("--remote uses this instance's configured HTTPS front door; --print reveals a one-time sign-in link.");
     return EXIT.USAGE;
+  }
+  const remote = args.includes("--remote");
+  const print = args.includes("--print");
+  const address = remote ? deps.remoteUrl?.() ?? "" : "";
+  const makeUrl = (token: string) => remote
+    ? remoteOpenUrlFor(address, deps.ctx.basePath, token)
+    : openUrlFor(deps.ctx.port, deps.ctx.basePath, token);
+  // Validate before minting, so invalid configuration does not invalidate an outstanding guide.
+  if (makeUrl(Buffer.alloc(32).toString("base64url")) === null) {
+    deps.io.err("refusing to open: no safe address at this instance's base path; --remote needs a configured HTTPS front door");
+    return EXIT.FAIL;
   }
   const store = new OpenGuideStore(deps.guideIo ?? fileOpenGuideIo(deps.ctx.stateDir), Date.now, deps.random);
   let token: string;
@@ -115,12 +145,17 @@ export async function cmdOpen(deps: OpenDeps, args: readonly string[]): Promise<
     deps.io.err(`could not mint a one-time link: ${err instanceof Error ? err.message : String(err)}`);
     return EXIT.FAIL;
   }
-  const url = openUrlFor(deps.ctx.port, deps.ctx.basePath, token);
+  const url = makeUrl(token);
   if (url === null) {
     deps.io.err(
       `refusing to open: port ${deps.ctx.port} or base path ${JSON.stringify(deps.ctx.basePath)} is not a safe loopback address`,
     );
     return EXIT.FAIL;
+  }
+  if (print) {
+    deps.io.err("One-time sign-in link: anyone holding it can enrol a full-access device for two minutes. Share privately.");
+    deps.io.out(url);
+    return EXIT.OK;
   }
   try {
     await (deps.openUrl ?? openWithPlatform)(url);
